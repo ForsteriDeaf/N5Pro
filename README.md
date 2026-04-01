@@ -1,47 +1,163 @@
-# N5pro Homelab Wizard - revisão minuciosa
+# 🚀 N5Pro – Proxmox Homelab Automation Platform
 
-Estrutura final pensada para:
-- gist/raw
-- github clonado
-- manutenção futura sem perder contexto
+> Transform your Proxmox + PBS homelab into a self-healing, automated infrastructure.
 
-## Ordem principal
-1. `01-PVE_Host-PostInstall.sh`
-2. reboot
-3. `n5pro`
-4. `n5pro-post`
+---
 
-## Fluxo lógico
-### PVE
-- `02-PBServer_PVE-CreateVM.sh`
-- `03-Unraid-NAS_PVE-CreateVM.sh`
+## ✨ Features
 
-### PBS
-- `04-PBServer_PBS-PostInstall.sh`
+* 📊 **Interactive Dashboard (n5pro)**
+* 🩺 **Doctor (n5pro-doctor)**
 
-### PVE
-- `05-PVE_PBS-AddStorage.sh`
-- `06-PVE_PBS-CreateBackupJob.sh`
+  * Diagnostics
+  * Guided fix
+  * Auto-fix mode
+* 🔄 **Update System (n5pro-update)**
 
-## Notas
-- `final/common.sh` e `final/lib/common.sh` são iguais por opção, para manter a estrutura híbrida.
-- o ficheiro real usado após o script 01 é `/etc/n5pro.conf`
-- `06` ficou fora do fluxo principal e foi movido para legado
-- o PBS usa disco externo direto; já não usa NFS do Unraid
+  * Version check (local vs remote)
+  * Safe update with backup
+* 💾 **Backup System (n5pro-backup)**
 
+  * Full environment backup
+  * PBS-ready
+* ⚙️ **Automation Ready**
+* 🧠 **Self-healing architecture**
+* 🔐 SSH + PBS bootstrap ready
 
-## Nota importante
-A base remota usada pelo `01` foi alinhada para a pasta `final/` do repositório GitHub:
-`https://raw.githubusercontent.com/ForsteriDeaf/N5Pro-Wizard1/main/final`
+---
 
+## 🧩 Components
 
-## Atualização de ordem
-A ordem foi revista para refletir a arquitetura atual:
-`Proxmox -> PBS -> Unraid`
+| Tool                  | Description          |
+| --------------------- | -------------------- |
+| `n5pro`               | Main dashboard       |
+| `n5pro-doctor`        | Diagnostics & repair |
+| `n5pro-update`        | Update system        |
+| `n5pro-backup`        | Backup system        |
+| `n5pro-bootstrap-pbs` | Deploy tools to PBS  |
 
-O PBS já não depende do Unraid/NFS para funcionar.
+---
 
+## ⚡ Quick Start (1 command)
 
-## Fusão auditada
-Esta versão funde a base segura com as melhorias de automação sem retirar o que já foi construído até agora.
-Inclui: PBS assistido, espera pelo PBS online, tentativa de injeção automática de n5pro-post/common.sh/config, datastore USB com menu, e wrapper 07->06 para compatibilidade.
+```bash
+bash <(curl -s https://raw.githubusercontent.com/ForsteriDeaf/N5Pro-Wizard/main/final/bootstrap.sh)
+```
+
+---
+
+## 🖥️ Dashboard Preview
+
+![Dashboard](screenshots/dashboard.png)
+
+---
+
+## 🧠 Philosophy
+
+N5Pro is designed around:
+
+* **Observability first**
+* **Self-healing systems**
+* **Minimal manual intervention**
+* **Enterprise-grade homelab practices**
+
+---
+
+## 🔄 Update System
+
+```bash
+n5pro-update --install
+```
+
+✔ automatic backup
+✔ version validation
+✔ safe deployment
+
+---
+
+## 🩺 Doctor Modes
+
+```bash
+n5pro-doctor
+n5pro-doctor --fix
+n5pro-doctor --auto
+n5pro-doctor --fix --dry-run
+```
+
+---
+
+## 💾 Backup
+
+```bash
+n5pro-backup
+```
+
+---
+
+## 🛰️ PBS Integration
+
+```bash
+n5pro-bootstrap-pbs
+```
+
+---
+
+## 🔐 Requirements
+
+* Proxmox VE 8+
+* Proxmox Backup Server (optional)
+* Root access
+* SSH enabled
+
+---
+
+## 📁 Configuration
+
+File:
+
+```
+/etc/n5pro.conf
+```
+
+---
+
+## 🧪 Versioning
+
+```bash
+n5pro-version check
+```
+
+---
+
+## 🛡️ Safety
+
+* All updates create backups
+* Doctor supports dry-run mode
+* Non-destructive by default
+
+---
+
+## 🗺️ Roadmap
+
+* [ ] Web UI
+* [ ] Multi-node cluster support
+* [ ] Metrics integration (Prometheus)
+* [ ] Alerting system
+
+---
+
+## 🤝 Contributing
+
+Pull requests are welcome.
+
+---
+
+## 📜 License
+
+MIT License
+
+---
+
+## 💬 Author
+
+Built with ❤️ for homelab automation
