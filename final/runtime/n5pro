@@ -1,0 +1,460 @@
+#!/usr/bin/env bash
+
+LINE="================================================================"
+CYAN="\033[38;5;14m"
+MAGENTA="\033[38;5;13m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+RED="\033[38;5;196m"
+RESET="\033[0m"
+
+detect_mode() {
+  if command -v pveversion >/dev/null 2>&1; then
+    echo "PVE"
+  elif command -v proxmox-backup-manager >/dev/null 2>&1; then
+    echo "PBS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
+pause() {
+  read -rp "Enter para continuar..." _
+}
+
+strip_ansi() {
+  sed 's/\x1B\[[0-9;]*[a-zA-Z]//g'
+}
+
+center_print() {
+  local text="$1"
+  local clean
+  local width
+  local len
+  local pad
+
+  clean="$(echo -e "$text" | strip_ansi)"
+  width="$(tput cols 2>/dev/null || echo 80)"
+  len=${#clean}
+  pad=$(( (width - len) / 2 ))
+  (( pad < 0 )) && pad=0
+
+  printf "%*s%b\n" "$pad" "" "$text"
+}
+
+show_logo() {
+  local mode host ver ip_line
+  mode="$(detect_mode)"
+  host="$(hostname 2>/dev/null || echo unknown)"
+
+  if command -v n5pro-version >/dev/null 2>&1; then
+    ver="$(n5pro-version local 2>/dev/null || echo unknown)"
+  else
+    ver="unknown"
+  fi
+
+  if [[ -f /etc/n5pro.conf ]]; then
+    # shellcheck disable=SC1091
+    source /etc/n5pro.conf
+  fi
+
+  case "$mode" in
+    PVE) ip_line="${PVE_IP:-n/d}" ;;
+    PBS) ip_line="${PBS_IP:-n/d}" ;;
+    *)   ip_line="n/d" ;;
+  esac
+
+  echo
+  echo
+  echo
+  printf "                \033[97m███╗   ██╗ \033[31m████████╗\033[97m  ██████╗                \033[0m\n"
+  printf "                \033[97m████╗  ██║ \033[31m██╔═════╝\033[97m  ██╔══██╗ ██████╗   ██████╗ \033[0m\n"
+  printf "                \033[97m██╔██╗ ██║ \033[31m████████╗\033[97m  ██████╔╝ ██╔══██╗ ██╔═══██╗\033[0m\n"
+  printf "                \033[97m██║╚██╗██║ \033[31m╚═════██║\033[97m  ██╔═══╝  ██║  ╚═╝ ██║   ██║\033[0m\n"
+  printf "                \033[97m██║ ╚████║ \033[31m███████╔╝\033[97m  ██║      ██║      ╚██████╔╝\033[0m\n"
+  printf "                \033[97m╚═╝  ╚═══╝ \033[31m╚══════╝ \033[97m  ╚═╝      ╚═╝       ╚═════╝ \033[0m\n"
+
+  echo
+  center_print "${CYAN}N5Pro v${ver}${RESET}"
+  center_print "${MAGENTA}Proxmox Automation Platform${RESET}"
+
+  echo -e "$LINE"
+  echo -e "${CYAN}[NODE]${RESET} ${host}  |  ${CYAN}[MODE]${RESET} ${mode}  |  ${CYAN}[VER]${RESET} ${ver}  |  ${CYAN}[IP]${RESET} ${ip_line}"
+  echo -e "$LINE"
+}
+
+confirm() {
+  read -rp "$1 [y/N]: " a
+  [[ "${a,,}" =~ ^y(es)?$ ]]
+}
+
+show_status() {
+  clear
+  show_logo
+  MODE="$(detect_mode)"
+
+STATUS_OK=true
+
+check_cmd() {
+  command -v "$1" >/dev/null 2>&1
+
+  echo
+  echo -e "${MAGENTA}Recomendação:${RESET}"
+
+  if [[ ! -f /etc/n5pro.conf ]]; then
+    echo -e "👉 Executa: ${CYAN}n5pro-post${RESET}"
+  elif ! command -v n5pro-update >/dev/null 2>&1; then
+    echo -e "👉 Executa: ${CYAN}n5pro-update --install${RESET}"
+  else
+    echo -e "${GREEN}Sistema pronto a usar ✔${RESET}"
+  fi
+
+  echo
+
+}
+
+  echo
+
+  if check_cmd pveversion || check_cmd proxmox-backup-manager; then
+    echo -e "${GREEN}[OK] Ambiente Proxmox detectado${RESET}"
+  else
+    echo -e "${RED}[FAIL] Ambiente não suportado${RESET}"
+    STATUS_OK=false
+  fi
+
+  if [[ -f /etc/n5pro.conf ]]; then
+    echo -e "${GREEN}[OK] Configuração encontrada${RESET}"
+  else
+    echo -e "${YELLOW}[WARN] /etc/n5pro.conf em falta${RESET}"
+    STATUS_OK=false
+  fi
+
+  if check_cmd n5pro-update; then
+    echo -e "${GREEN}[OK] Runtime instalado${RESET}"
+  else
+    echo -e "${YELLOW}[WARN] Runtime não instalado${RESET}"
+    STATUS_OK=false
+  fi
+
+  echo -e "$LINE"
+
+  echo -e "$LINE"
+  echo -e "${MAGENTA} Dashboard ($MODE)${RESET}"
+  echo -e "$LINE"
+
+  [[ -f /etc/n5pro.conf ]] && source /etc/n5pro.conf
+
+  echo "[CHECK] Repo base..."
+  echo "${N5PRO_REPO_BASE:-não configurado}"
+
+  echo "[CHECK] Hostname..."
+  hostname
+
+  if [[ "$MODE" == "PVE" ]]; then
+    echo "[CHECK] Versão Proxmox..."
+    pveversion | head -n1
+
+    echo "[CHECK] Storages..."
+    pvesm status || true
+
+    echo "[CHECK] VMs..."
+    qm list || true
+
+    echo "[CHECK] CTs..."
+    pct list || true
+
+    echo "[CHECK] IOMMU..."
+    grep -Eiq 'iommu=pt|intel_iommu=on|amd_iommu=on' /proc/cmdline \
+      && echo -e "${GREEN}[OK] IOMMU ativa${RESET}" \
+      || echo -e "${YELLOW}[WARN] IOMMU desativada${RESET}"
+  elif [[ "$MODE" == "PBS" ]]; then
+    echo "[CHECK] Versão PBS..."
+    proxmox-backup-manager version || true
+
+    echo "[CHECK] Datastores PBS..."
+    proxmox-backup-manager datastore list || true
+  else
+    echo -e "${YELLOW}[WARN] Ambiente não reconhecido.${RESET}"
+  fi
+
+  echo "[CHECK] Root filesystem..."
+  findmnt / || true
+
+  echo "[CHECK] Timezone..."
+  timedatectl | sed -n '1,6p' || true
+
+  if command -v n5pro-version >/dev/null 2>&1; then
+    LOCAL_V="$(n5pro-version local 2>/dev/null || echo unknown)"
+    REMOTE_V="$(n5pro-version remote 2>/dev/null || echo unknown)"
+
+    echo "[CHECK] N5Pro version: ${LOCAL_V}"
+
+    if [[ "$REMOTE_V" != "unknown" && "$LOCAL_V" != "$REMOTE_V" ]]; then
+      echo -e "${YELLOW}[UPDATE] Nova versão disponível: ${REMOTE_V}${RESET}"
+    else
+      echo -e "${GREEN}[OK] Sistema atualizado${RESET}"
+    fi
+  fi
+
+  echo -e "$LINE"
+  echo -e "${GREEN}[OK] Estado visual completo!${RESET}"
+  echo -e "$LINE"
+}
+
+update_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "Update"
+    echo -e "$LINE"
+    echo "1) Ver versão atual"
+    echo "2) Verificar updates"
+    echo "3) Atualizar repo"
+    echo "4) Atualizar + instalar"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1)
+        if command -v n5pro-version >/dev/null 2>&1; then
+          n5pro-version local
+        else
+          echo -e "${YELLOW}[WARN] n5pro-version não encontrado${RESET}"
+        fi
+        ;;
+      2)
+        if command -v n5pro-version >/dev/null 2>&1; then
+          n5pro-version check
+        else
+          echo -e "${YELLOW}[WARN] n5pro-version não encontrado${RESET}"
+        fi
+        ;;
+      3)
+        n5pro-update
+        ;;
+      4)
+        n5pro-update --install
+        ;;
+      0)
+        return
+        ;;
+      *)
+        echo -e "${YELLOW}Opção inválida${RESET}"
+        ;;
+    esac
+    pause
+  done
+}
+
+doctor_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "Diagnóstico"
+    echo -e "$LINE"
+    echo "1) Diagnóstico normal"
+    echo "2) Correção guiada"
+    echo "3) Auto-correção"
+    echo "4) Dry-run"
+    echo "5) Heal guiado"
+    echo "6) Heal automático"
+    echo "7) Heal + bootstrap PBS"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1) n5pro-doctor ;;
+      2) n5pro-doctor --fix ;;
+      3) n5pro-doctor --auto ;;
+      4) n5pro-doctor --fix --dry-run ;;
+      5) n5pro-heal ;;
+      6) n5pro-heal --auto ;;
+      7) n5pro-heal --with-bootstrap ;;
+      0) return ;;
+      *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+    esac
+    pause
+  done
+}
+
+backup_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "Backup"
+    echo -e "$LINE"
+    echo "1) Backup completo"
+    echo "2) Backup + enviar PBS"
+    echo "3) Limpar backups antigos"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1)
+        confirm "Criar backup?" && n5pro-backup
+        ;;
+      2)
+        confirm "Backup + enviar PBS?" && n5pro-backup && echo "[TODO] upload PBS"
+        ;;
+      3)
+        confirm "Limpar backups antigos?" && find /root/n5pro-backups -type f -name "*.tar.gz" -delete
+        ;;
+      0) return ;;
+      *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+    esac
+    pause
+  done
+}
+
+pbs_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "PBS Tools"
+    echo -e "$LINE"
+    echo "1) Bootstrap PBS"
+    echo "2) Reinstalar tools PBS"
+    echo "3) Testar ligação PBS"
+    echo "4) SSH setup PBS"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1)
+        confirm "Executar bootstrap PBS?" && n5pro-bootstrap-pbs
+        ;;
+      2)
+        confirm "Reinstalar tools PBS?" && n5pro-bootstrap-pbs
+        ;;
+      3)
+        if [[ -f /etc/n5pro.conf ]]; then
+          # shellcheck disable=SC1091
+          source /etc/n5pro.conf
+          ping -c1 "${PBS_IP}"
+        else
+          echo -e "${YELLOW}[WARN] /etc/n5pro.conf não encontrado${RESET}"
+        fi
+        ;;
+      4)
+        confirm "Configurar SSH key para PBS?" && n5pro-ssh-setup-pbs
+        ;;
+      0) return ;;
+      *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+    esac
+    pause
+  done
+}
+
+logs_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "Logs"
+    echo -e "$LINE"
+    echo "1) Ver últimas 50 linhas"
+    echo "2) Ver só WARN/ERRO"
+    echo "3) Follow em tempo real"
+    echo "4) Exportar log"
+    echo "5) Limpar log"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1) n5pro-log tail; pause ;;
+      2) n5pro-log errors; pause ;;
+      3) n5pro-log follow ;;
+      4) n5pro-log export; pause ;;
+      5) n5pro-log clear; pause ;;
+      0) return ;;
+      *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+    esac
+  done
+}
+
+config_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "Config"
+    echo -e "$LINE"
+    echo "1) Mostrar /etc/n5pro.conf"
+    echo "2) Editar /etc/n5pro.conf"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1)
+        if [[ -f /etc/n5pro.conf ]]; then
+          cat /etc/n5pro.conf
+        else
+          echo -e "${YELLOW}[WARN] /etc/n5pro.conf não encontrado${RESET}"
+        fi
+        pause
+        ;;
+      2)
+        ${EDITOR:-nano} /etc/n5pro.conf
+        ;;
+      0) return ;;
+      *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+    esac
+  done
+}
+
+automation_menu() {
+  while true; do
+    clear
+    echo -e "$LINE"
+    echo "Automation"
+    echo -e "$LINE"
+    echo "1) Ver cron jobs"
+    echo "2) Instalar doctor diário"
+    echo "3) Instalar backup diário"
+    echo "4) Remover doctor diário"
+    echo "5) Remover backup diário"
+    echo "6) Remover todos os jobs N5Pro"
+    echo "0) Voltar"
+
+    read -rp "Escolha: " o
+    case "$o" in
+      1) n5pro-cron list; pause ;;
+      2) confirm "Instalar cron do doctor?" && n5pro-cron install-doctor; pause ;;
+      3) confirm "Instalar cron do backup?" && n5pro-cron install-backup; pause ;;
+      4) confirm "Remover cron do doctor?" && n5pro-cron remove-doctor; pause ;;
+      5) confirm "Remover cron do backup?" && n5pro-cron remove-backup; pause ;;
+      6) confirm "Remover todos os cron jobs N5Pro?" && n5pro-cron remove-all; pause ;;
+      0) return ;;
+      *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+    esac
+  done
+}
+
+while true; do
+  show_status
+
+  echo -e "${CYAN}N5Pro Control Center${RESET}"
+  echo -e "${MAGENTA}Selecione uma ação:${RESET}"
+  echo "1) Update"
+  echo "2) Wizard"
+  echo "3) Diagnóstico"
+  echo "4) Backup"
+  echo "5) PBS"
+  echo "6) Logs"
+  echo "7) Config"
+  echo "8) Automation"
+  echo "0) Sair"
+
+  read -rp "Escolha: " opt
+
+  case "$opt" in
+    1) update_menu ;;
+    2) n5pro-post ;;
+    3) doctor_menu ;;
+    4) backup_menu ;;
+    5) pbs_menu ;;
+    6) logs_menu ;;
+    7) config_menu ;;
+    8) automation_menu ;;
+    0) exit ;;
+    *) echo -e "${YELLOW}Opção inválida${RESET}" ;;
+  esac
+done
