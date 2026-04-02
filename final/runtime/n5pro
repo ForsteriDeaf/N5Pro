@@ -97,20 +97,6 @@ STATUS_OK=true
 
 check_cmd() {
   command -v "$1" >/dev/null 2>&1
-
-  echo
-  echo -e "${MAGENTA}Recomendação:${RESET}"
-
-  if [[ ! -f /etc/n5pro.conf ]]; then
-    echo -e "👉 Executa: ${CYAN}n5pro-post${RESET}"
-  elif ! command -v n5pro-update >/dev/null 2>&1; then
-    echo -e "👉 Executa: ${CYAN}n5pro-update --install${RESET}"
-  else
-    echo -e "${GREEN}Sistema pronto a usar ✔${RESET}"
-  fi
-
-  echo
-
 }
 
   echo
@@ -136,6 +122,18 @@ check_cmd() {
     STATUS_OK=false
   fi
 
+  echo
+  echo -e "${MAGENTA}Recomendação:${RESET}"
+
+  if [[ ! -f /etc/n5pro.conf ]]; then
+    echo -e "👉 Executa: ${CYAN}n5pro-post${RESET}"
+  elif ! command -v n5pro-update >/dev/null 2>&1; then
+    echo -e "👉 Executa: ${CYAN}n5pro-update --install${RESET}"
+  else
+    echo -e "${GREEN}Sistema pronto a usar ✔${RESET}"
+  fi
+
+  echo
   echo -e "$LINE"
 
   echo -e "$LINE"
