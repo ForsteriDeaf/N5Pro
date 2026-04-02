@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -e
+
+[[ -f /etc/n5pro.conf ]] || { echo "[ERRO] /etc/n5pro.conf não encontrado"; exit 1; }
+# shellcheck disable=SC1091
+source /etc/n5pro.conf
+
+DRY_RUN="false"
+
+repo_check() {
+  [[ -n "${N5PRO_REPO_BASE:-}" ]]
+}
+
+run_remote() {
+  local script_path="$1"
+  if ! repo_check; then
+    echo "[ERRO] N5PRO_REPO_BASE não está definido corretamente em /etc/n5pro.conf"
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "[DRY-RUN] bash <(curl -fsSL \"${N5PRO_REPO_BASE}/${script_path}\")"
+  else
+    bash <(curl -fsSL "${N5PRO_REPO_BASE}/${script_path}")
+  fi
+}
+
+detect_mode() {
+  if command -v pveversion >/dev/null 2>&1; then
+    echo "PVE"
+  elif command -v proxmox-backup-manager >/dev/null 2>&1; then
+    echo "PBS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
+wizard_pve_core() {
+  clear
+  echo "==========================================================="
+  echo " N5Pro Wizard - PVE / Core"
+  echo "==========================================================="
+  echo "Este modo faz:"
+  echo " 1) Validar ISO do PBS"
+  echo " 2) pve/02-PVE-CreatePBSVM.sh"
+  echo " 3) pve/03-PVE-CreateUnraidVM.sh"
+  echo "==========================================================="
+
+  ISO_FOUND=""
+  if command -v pvesm >/dev/null 2>&1; then
+    ISO_FOUND="$(pvesm list local 2>/dev/null | awk 'NR>1 {print $1}' | grep -i 'proxmox-backup-server.*\.iso\|pbs.*\.iso' | head -n1 || true)"
+  fi
+
+  if [[ -n "$ISO_FOUND" ]]; then
+    echo "[OK] ISO PBS encontrado em local:iso -> ${ISO_FOUND}"
+  else
+    echo "[WARN] ISO do Proxmox Backup Server NÃO encontrado em local:iso"
+    echo "Coloca o ISO em:"
+    echo " Datacenter -> pve -> local -> ISO Images"
+    echo
+    read -rp "Continuar mesmo assim? [y/N]: " ans_iso
+    [[ "${ans_iso,,}" =~ ^y(es)?$ ]] || return 0
+  fi
+
+  echo
+  read -rp "Queres continuar? [y/N]: " ans
+  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
+
+  run_remote "pve/02-PVE-CreatePBSVM.sh"
+  run_remote "pve/03-PVE-CreateUnraidVM.sh"
+
+  echo
+  echo "==========================================================="
+  echo " Próximos passos manuais"
+  echo "==========================================================="
+  echo " - O script 02 cria a PBS, ajuda na instalação e remove a ISO depois"
+  echo " - Instalar / arrancar o Unraid"
+  echo " - Entrar na PBS e correr: n5pro-post"
+  echo "==========================================================="
+  read -rp "Enter para continuar..." _
+}
+
+pbs_wizard() {
+  clear
+  echo "==========================================================="
+  echo " N5Pro Wizard - PBS"
+  echo "==========================================================="
+  echo "Este modo faz:"
+  echo " 1) pbs/06-PBS-PostInstall.sh"
+  echo "==========================================================="
+  read -rp "Queres continuar? [y/N]: " ans
+  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
+  run_remote "pbs/06-PBS-PostInstall.sh"
+  echo
+  echo "==========================================================="
+  echo " Próximos passos"
+  echo "==========================================================="
+  echo " - Voltar à PVE"
+  echo " - Correr: n5pro-post"
+  echo " - Escolher finalizar PBS no Proxmox"
+  echo "==========================================================="
+  read -rp "Enter para continuar..." _
+}
+
+pve_wizard_finalize() {
+  clear
+  echo "==========================================================="
+  echo " N5Pro Wizard - PVE / Finalize"
+  echo "==========================================================="
+  echo "Este modo faz:"
+  echo " 1) pve/04-PVE-AddPBSStorage.sh"
+  echo " 2) pve/05-PVE-CreatePBSBackupJob.sh"
+  echo "==========================================================="
+  read -rp "Queres continuar? [y/N]: " ans
+  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
+  run_remote "pve/04-PVE-AddPBSStorage.sh"
+  run_remote "pve/05-PVE-CreatePBSBackupJob.sh"
+  read -rp "Enter para continuar..." _
+}
+
+while true; do
+  MODE="$(detect_mode)"
+  clear
+  echo "==========================================================="
+  echo " N5Pro Post Menu - Wizard"
+  echo "==========================================================="
+  echo "Host      : $(hostname)"
+  echo "Modo      : ${MODE}"
+  echo "Repo base : ${N5PRO_REPO_BASE}"
+  echo "Dry-run   : ${DRY_RUN}"
+  echo "==========================================================="
+
+  if [[ "${MODE}" == "PVE" ]]; then
+    echo "1) Ver estado do host (n5pro)"
+    echo "2) Alternar dry-run"
+    echo "3) Wizard: criar PBS VM + Unraid VM"
+    echo "4) Wizard: adicionar PBS + criar jobs"
+    echo "5) Manual: pve/02-PVE-CreatePBSVM.sh"
+    echo "6) Manual: pve/03-PVE-CreateUnraidVM.sh"
+    echo "7) Manual: pve/04-PVE-AddPBSStorage.sh"
+    echo "8) Manual: pve/05-PVE-CreatePBSBackupJob.sh"
+    echo "9) Mostrar /etc/n5pro.conf"
+    echo "0) Sair"
+    read -rp "Escolha: " opt
+    case "$opt" in
+      1) n5pro; read -rp "Enter para continuar..." _ ;;
+      2) [[ "$DRY_RUN" == "true" ]] && DRY_RUN="false" || DRY_RUN="true" ;;
+      3) wizard_pve_core ;;
+      4) pve_wizard_finalize ;;
+      5) run_remote "pve/02-PVE-CreatePBSVM.sh"; read -rp "Enter para continuar..." _ ;;
+      6) run_remote "pve/03-PVE-CreateUnraidVM.sh"; read -rp "Enter para continuar..." _ ;;
+      7) run_remote "pve/04-PVE-AddPBSStorage.sh"; read -rp "Enter para continuar..." _ ;;
+      8) run_remote "pve/05-PVE-CreatePBSBackupJob.sh"; read -rp "Enter para continuar..." _ ;;
+      9) cat /etc/n5pro.conf; read -rp "Enter para continuar..." _ ;;
+      0) exit 0 ;;
+    esac
+
+  elif [[ "${MODE}" == "PBS" ]]; then
+    echo "1) Alternar dry-run"
+    echo "2) Wizard: preparar datastore PBS"
+    echo "3) Manual: pbs/06-PBS-PostInstall.sh"
+    echo "4) Mostrar datastores PBS"
+    echo "5) Mostrar /etc/n5pro.conf"
+    echo "0) Sair"
+    read -rp "Escolha: " opt
+    case "$opt" in
+      1) [[ "$DRY_RUN" == "true" ]] && DRY_RUN="false" || DRY_RUN="true" ;;
+      2) pbs_wizard ;;
+      3) run_remote "pbs/06-PBS-PostInstall.sh"; read -rp "Enter para continuar..." _ ;;
+      4) proxmox-backup-manager datastore list || true; read -rp "Enter para continuar..." _ ;;
+      5) cat /etc/n5pro.conf; read -rp "Enter para continuar..." _ ;;
+      0) exit 0 ;;
+    esac
+
+  else
+    echo "Ambiente não reconhecido."
+    exit 1
+  fi
+done
