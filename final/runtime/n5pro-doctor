@@ -1,0 +1,567 @@
+#!/usr/bin/env bash
+set -e
+
+RED="\033[38;5;196m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+CYAN="\033[38;5;14m"
+MAGENTA="\033[38;5;13m"
+BOLD="\033[1m"
+RESET="\033[0m"
+LINE="==========================================================="
+
+OK_COUNT=0
+WARN_COUNT=0
+ERR_COUNT=0
+
+FIX_MODE="false"
+AUTO_MODE="false"
+DRY_RUN="false"
+
+ok(){ echo -e "${GREEN}[OK]${RESET} $*"; OK_COUNT=$((OK_COUNT+1)); }
+warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; WARN_COUNT=$((WARN_COUNT+1)); }
+err(){ echo -e "${RED}[ERRO]${RESET} $*"; ERR_COUNT=$((ERR_COUNT+1)); }
+info(){ echo -e "${CYAN}[INFO]${RESET} $*"; }
+
+usage() {
+  cat <<USAGE
+Uso:
+  n5pro-doctor
+  n5pro-doctor --fix
+  n5pro-doctor --auto
+  n5pro-doctor --dry-run
+  n5pro-doctor --fix --dry-run
+USAGE
+}
+
+run_cmd() {
+  local cmd="$*"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] $cmd"
+  else
+    eval "$cmd"
+  fi
+}
+
+confirm_fix() {
+  local prompt="$1"
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    return 0
+  fi
+  if [[ "$FIX_MODE" != "true" ]]; then
+    return 1
+  fi
+  local ans
+  read -rp "$prompt [y/N]: " ans
+  [[ "${ans,,}" =~ ^y(es)?$ ]]
+}
+
+detect_mode() {
+  if command -v pveversion >/dev/null 2>&1; then
+    echo "PVE"
+  elif command -v proxmox-backup-manager >/dev/null 2>&1; then
+    echo "PBS"
+  else
+    echo "UNKNOWN"
+  fi
+}
+
+load_config() {
+  if [[ -f /etc/n5pro.conf ]]; then
+    # shellcheck disable=SC1091
+    source /etc/n5pro.conf
+    ok "/etc/n5pro.conf encontrado."
+  else
+    warn "/etc/n5pro.conf não encontrado."
+  fi
+}
+
+need_cmd() {
+  local c="$1"
+  command -v "$c" >/dev/null 2>&1 || warn "Comando não encontrado: $c"
+}
+
+set_config_key() {
+  local key="$1"
+  local value="$2"
+
+  if [[ ! -f /etc/n5pro.conf ]]; then
+    warn "Sem /etc/n5pro.conf para atualizar ${key}."
+    return 1
+  fi
+
+  if grep -q "^${key}=" /etc/n5pro.conf; then
+    run_cmd "sed -i 's|^${key}=.*|${key}=\"${value}\"|' /etc/n5pro.conf"
+  else
+    run_cmd "printf '%s\n' '${key}=\"${value}\"' >> /etc/n5pro.conf"
+  fi
+}
+
+infer_subnet_base() {
+  ip -4 route get 1.1.1.1 2>/dev/null | awk '
+    {
+      for(i=1;i<=NF;i++){
+        if($i=="src"){ split($(i+1),a,"."); print a[1]"."a[2]"."a[3]; exit }
+      }
+    }'
+}
+
+fix_config_ips() {
+  local subnet expected_pve expected_pbs expected_unraid expected_gw changed="false"
+  subnet="$(infer_subnet_base)"
+  [[ -n "$subnet" ]] || { warn "Não consegui inferir subrede atual."; return 1; }
+
+  expected_pve="${subnet}.99"
+  expected_pbs="${subnet}.110"
+  expected_unraid="${subnet}.100"
+  expected_gw="${subnet}.1"
+
+  if [[ "${PVE_IP:-}" != "$expected_pve" ]]; then
+    warn "PVE_IP atual='${PVE_IP:-vazio}' esperado='${expected_pve}'"
+    if confirm_fix "Queres corrigir PVE_IP para ${expected_pve}"; then
+      set_config_key "PVE_IP" "$expected_pve"
+      PVE_IP="$expected_pve"
+      changed="true"
+      ok "PVE_IP corrigido."
+    fi
+  else
+    ok "PVE_IP correto."
+  fi
+
+  if [[ "${PBS_IP:-}" != "$expected_pbs" ]]; then
+    warn "PBS_IP atual='${PBS_IP:-vazio}' esperado='${expected_pbs}'"
+    if confirm_fix "Queres corrigir PBS_IP para ${expected_pbs}"; then
+      set_config_key "PBS_IP" "$expected_pbs"
+      PBS_IP="$expected_pbs"
+      changed="true"
+      ok "PBS_IP corrigido."
+    fi
+  else
+    ok "PBS_IP correto."
+  fi
+
+  if [[ "${UNRAID_IP:-}" != "$expected_unraid" ]]; then
+    warn "UNRAID_IP atual='${UNRAID_IP:-vazio}' esperado='${expected_unraid}'"
+    if confirm_fix "Queres corrigir UNRAID_IP para ${expected_unraid}"; then
+      set_config_key "UNRAID_IP" "$expected_unraid"
+      UNRAID_IP="$expected_unraid"
+      changed="true"
+      ok "UNRAID_IP corrigido."
+    fi
+  else
+    ok "UNRAID_IP correto."
+  fi
+
+  if [[ "${GATEWAY:-}" != "$expected_gw" ]]; then
+    warn "GATEWAY atual='${GATEWAY:-vazio}' esperado='${expected_gw}'"
+    if confirm_fix "Queres corrigir GATEWAY para ${expected_gw}"; then
+      set_config_key "GATEWAY" "$expected_gw"
+      GATEWAY="$expected_gw"
+      changed="true"
+      ok "GATEWAY corrigido."
+    fi
+  else
+    ok "GATEWAY correto."
+  fi
+
+  [[ "$changed" == "true" ]] && info "Config IPs atualizada em /etc/n5pro.conf"
+}
+
+check_basic() {
+  echo -e "$LINE"
+  echo -e "${MAGENTA}${BOLD} N5Pro Doctor PRO v1.0${RESET}"
+  echo -e "$LINE"
+
+  MODE="$(detect_mode)"
+  info "Modo detetado: ${MODE}"
+
+  if [[ "$MODE" == "UNKNOWN" ]]; then
+    err "Ambiente não reconhecido."
+    return
+  fi
+
+  load_config
+
+  if [[ -n "${N5PRO_REPO_BASE:-}" ]]; then
+    ok "N5PRO_REPO_BASE definido: ${N5PRO_REPO_BASE}"
+  else
+    warn "N5PRO_REPO_BASE não definido."
+  fi
+
+  TZ_NOW="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  if [[ -n "$TZ_NOW" ]]; then
+    ok "Timezone: ${TZ_NOW}"
+  else
+    warn "Não foi possível ler o timezone."
+  fi
+
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    info "Modo de execução: AUTO"
+  elif [[ "$FIX_MODE" == "true" && "$DRY_RUN" == "true" ]]; then
+    info "Modo de execução: FIX + DRY-RUN"
+  elif [[ "$FIX_MODE" == "true" ]]; then
+    info "Modo de execução: FIX"
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    info "Modo de execução: DRY-RUN"
+  else
+    info "Modo de execução: CHECK"
+  fi
+}
+
+check_pve_vm_identity() {
+  local vmid="$1"
+  local expected_name="$2"
+  local expected_mac="$3"
+
+  if qm status "$vmid" >/dev/null 2>&1; then
+    ok "VM ${vmid} existe."
+  else
+    warn "VM ${vmid} não existe."
+    return 0
+  fi
+
+  local cfg real_name real_mac
+  cfg="$(qm config "$vmid" 2>/dev/null || true)"
+
+  real_name="$(echo "$cfg" | awk -F': ' '/^name: /{print $2}')"
+  if [[ "$real_name" == "$expected_name" ]]; then
+    ok "VM ${vmid} nome correto: ${expected_name}"
+  else
+    warn "VM ${vmid} nome esperado='${expected_name}' atual='${real_name:-desconhecido}'"
+  fi
+
+  real_mac="$(echo "$cfg" | awk -F'virtio=' '/^net0: /{split($2,a,","); print a[1]}')"
+  if [[ -n "$expected_mac" && "$real_mac" == "$expected_mac" ]]; then
+    ok "VM ${vmid} MAC correto: ${expected_mac}"
+  else
+    warn "VM ${vmid} MAC esperado='${expected_mac:-n/d}' atual='${real_mac:-desconhecido}'"
+  fi
+}
+
+fix_pve_add_pbs_storage() {
+  [[ -n "${PBS_IP:-}" ]] || { warn "PBS_IP não definido."; return 1; }
+  [[ -n "${PBS_DATASTORE:-}" ]] || { warn "PBS_DATASTORE não definido."; return 1; }
+
+  local user fp pass
+  user="${PBS_USERNAME:-root@pam}"
+
+  fp="$(
+    echo | openssl s_client -connect "${PBS_IP}:8007" 2>/dev/null \
+    | openssl x509 -noout -fingerprint -sha256 2>/dev/null \
+    | cut -d'=' -f2
+  )"
+
+  [[ -n "$fp" ]] || { warn "Não foi possível obter fingerprint do PBS."; return 1; }
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] pvesm add pbs ${PBS_DATASTORE} --server ${PBS_IP} --port 8007 --datastore ${PBS_DATASTORE} --username ${user} --password '***' --fingerprint ${fp} --content backup"
+    return 0
+  fi
+
+  read -r -s -p "Password de ${user}: " pass
+  echo
+  pvesm add pbs "${PBS_DATASTORE}" \
+    --server "${PBS_IP}" \
+    --port 8007 \
+    --datastore "${PBS_DATASTORE}" \
+    --username "${user}" \
+    --password "${pass}" \
+    --fingerprint "${fp}" \
+    --content backup
+}
+
+fix_pve_create_jobs() {
+  local script=""
+  if [[ -f /root/N5Pro-Wizard/final/06-PVE_PBS-CreateBackupJob.sh ]]; then
+    script="/root/N5Pro-Wizard/final/06-PVE_PBS-CreateBackupJob.sh"
+  elif [[ -f /root/N5Pro-Wizard/final/07-PVE_PBS-CreateBackupJob.sh ]]; then
+    script="/root/N5Pro-Wizard/final/07-PVE_PBS-CreateBackupJob.sh"
+  fi
+
+  [[ -n "$script" ]] || { warn "Script de criação de jobs PBS não encontrado."; return 1; }
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    info "[DRY-RUN] bash $script"
+    return 0
+  fi
+
+  bash "$script"
+}
+
+check_pve() {
+  echo -e "$LINE"
+  echo -e "${MAGENTA}${BOLD} Verificações PVE${RESET}"
+  echo -e "$LINE"
+
+  need_cmd pvesm
+  need_cmd qm
+  need_cmd pct
+  need_cmd pvesh
+  need_cmd openssl
+
+  fix_config_ips
+
+  if pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'NVMe-Containers'; then
+    ok "Storage NVMe-Containers existe."
+  else
+    err "Storage NVMe-Containers não existe."
+  fi
+
+  if grep -Eiq 'iommu=pt|intel_iommu=on|amd_iommu=on' /proc/cmdline; then
+    ok "IOMMU ativa no kernel."
+  else
+    err "IOMMU não parece ativa em /proc/cmdline."
+  fi
+
+  check_pve_vm_identity "${PBS_VMID:-110}" "PBServer" "${PBS_MAC:-BC:24:11:05:01:10}"
+  check_pve_vm_identity "${UNRAID_VMID:-100}" "Unraid-NAS" "${UNRAID_MAC:-BC:24:11:05:01:00}"
+
+  if qm status "${UNRAID_VMID:-100}" >/dev/null 2>&1; then
+    local unraid_cfg boot_line
+    unraid_cfg="$(qm config "${UNRAID_VMID:-100}" 2>/dev/null || true)"
+    boot_line="$(echo "$unraid_cfg" | awk -F': ' '/^boot: /{print $2}')"
+
+    if echo "$boot_line" | grep -q 'hostpci1'; then
+      ok "Boot order do Unraid inclui hostpci1 (NVMe primeiro)."
+    else
+      warn "Boot order do Unraid não parece usar hostpci1 como principal."
+    fi
+
+    if echo "$boot_line" | grep -q 'usb0'; then
+      ok "Boot order do Unraid inclui usb0 como fallback."
+    else
+      warn "Boot order do Unraid não inclui usb0 como fallback."
+    fi
+  fi
+
+  if [[ -n "${PBS_IP:-}" ]]; then
+    if ping -c 1 -W 1 "${PBS_IP}" >/dev/null 2>&1; then
+      ok "PBS responde por rede (${PBS_IP})."
+    else
+      warn "PBS não responde por ping (${PBS_IP})."
+    fi
+  else
+    warn "PBS_IP não definido em /etc/n5pro.conf."
+  fi
+
+  local pbs_storage_name
+  pbs_storage_name="${PBS_DATASTORE:-usb-temp}"
+
+  if pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$pbs_storage_name"; then
+    ok "Storage PBS '${pbs_storage_name}' existe no PVE."
+  else
+    warn "Storage PBS '${pbs_storage_name}' ainda não existe no PVE."
+    if confirm_fix "Queres adicionar automaticamente o storage PBS no PVE"; then
+      fix_pve_add_pbs_storage && ok "Storage PBS adicionado." || warn "Falhou a correção do storage PBS."
+    fi
+  fi
+
+  if pvesh get /cluster/backup --output-format json >/dev/null 2>&1; then
+    local jobs
+    jobs="$(pvesh get /cluster/backup --output-format json 2>/dev/null || true)"
+    if echo "$jobs" | grep -q 'auto-pbs'; then
+      ok "Jobs automáticos PBS encontrados."
+    else
+      warn "Jobs automáticos PBS não encontrados."
+      if confirm_fix "Queres criar automaticamente os jobs PBS"; then
+        fix_pve_create_jobs && ok "Jobs PBS criados/corrigidos." || warn "Falhou a correção dos jobs PBS."
+      fi
+    fi
+  else
+    warn "Não foi possível ler jobs de backup no PVE."
+  fi
+
+  if pvesm list local 2>/dev/null | awk 'NR>1 {print $1}' | grep -Ei 'proxmox-backup-server.*\.iso|pbs.*\.iso' >/dev/null 2>&1; then
+    ok "ISO PBS encontrado em local:iso."
+  else
+    warn "ISO PBS não encontrado em local:iso."
+  fi
+}
+
+fix_pbs_mount_datastore() {
+  local mount_root device
+  mount_root="${PBS_DATASTORE_MOUNT:-/mnt/datastore}"
+  device="${PBS_BACKUP_DEVICE:-}"
+
+  mkdir -p "$mount_root"
+
+  if findmnt "$mount_root" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if grep -qE "[[:space:]]${mount_root}[[:space:]]" /etc/fstab 2>/dev/null; then
+    run_cmd "mount \"$mount_root\""
+    return 0
+  fi
+
+  if [[ -n "$device" && -b "$device" ]]; then
+    run_cmd "mount \"$device\" \"$mount_root\""
+  else
+    warn "PBS_BACKUP_DEVICE inválido ou não definido; não consigo montar automaticamente."
+    return 1
+  fi
+}
+
+fix_pbs_create_datastore() {
+  local ds_name ds_path mount_root
+  ds_name="${PBS_DATASTORE:-usb-temp}"
+  mount_root="${PBS_DATASTORE_MOUNT:-/mnt/datastore}"
+  ds_path="${mount_root}/${ds_name}"
+
+  run_cmd "mkdir -p \"$ds_path\""
+  if proxmox-backup-manager datastore list --output-format json 2>/dev/null | jq -e --arg n "$ds_name" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+    return 0
+  fi
+  run_cmd "proxmox-backup-manager datastore create \"$ds_name\" \"$ds_path\""
+}
+
+check_pbs() {
+  echo -e "$LINE"
+  echo -e "${MAGENTA}${BOLD} Verificações PBS${RESET}"
+  echo -e "$LINE"
+
+  need_cmd proxmox-backup-manager
+  need_cmd findmnt
+  need_cmd jq
+
+  fix_config_ips
+
+  local datastore_name mount_root target_path ds_json
+  datastore_name="${PBS_DATASTORE:-usb-temp}"
+  mount_root="${PBS_DATASTORE_MOUNT:-/mnt/datastore}"
+  target_path="${mount_root}/${datastore_name}"
+
+  ds_json="$(proxmox-backup-manager datastore list --output-format json 2>/dev/null || echo '[]')"
+
+  if echo "$ds_json" | jq -e 'length > 0' >/dev/null 2>&1; then
+    ok "PBS devolveu pelo menos um datastore configurado."
+  else
+    warn "PBS não devolveu datastores configurados."
+  fi
+
+  if echo "$ds_json" | jq -e --arg n "$datastore_name" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+    ok "Datastore '${datastore_name}' existe."
+  else
+    warn "Datastore '${datastore_name}' não existe."
+    if confirm_fix "Queres criar automaticamente o datastore '${datastore_name}'"; then
+      fix_pbs_create_datastore && ok "Datastore PBS criado." || warn "Falhou a correção do datastore PBS."
+      ds_json="$(proxmox-backup-manager datastore list --output-format json 2>/dev/null || echo '[]')"
+    fi
+  fi
+
+  while IFS='|' read -r ds_name ds_path; do
+    [[ -n "$ds_name" ]] || continue
+    [[ -n "$ds_path" ]] || continue
+
+    if [[ -d "$ds_path" ]]; then
+      ok "Path de datastore existe: $ds_path"
+    else
+      warn "Path de datastore não existe: $ds_path"
+    fi
+
+    if findmnt "$ds_path" >/dev/null 2>&1; then
+      ok "Path de datastore está montado: $ds_path"
+    else
+      local parent_dir
+      parent_dir="$(dirname "$ds_path")"
+      if findmnt "$parent_dir" >/dev/null 2>&1; then
+        ok "Parent mount ativo para datastore: $parent_dir"
+      else
+        warn "Nem o datastore nem o parent parecem montados: $ds_path"
+      fi
+    fi
+  done < <(echo "$ds_json" | jq -r '.[] | "\(.name)|\(.path)"' 2>/dev/null)
+
+  if findmnt "$mount_root" >/dev/null 2>&1; then
+    ok "${mount_root} está montado."
+  else
+    warn "${mount_root} não está montado."
+    if confirm_fix "Queres montar automaticamente ${mount_root}"; then
+      fix_pbs_mount_datastore && ok "Mount PBS corrigido." || warn "Falhou a correção do mount PBS."
+    fi
+  fi
+
+  if [[ -d "$target_path" ]]; then
+    ok "Path ${target_path} existe."
+  else
+    warn "Path ${target_path} não existe."
+    if confirm_fix "Queres criar automaticamente ${target_path}"; then
+      run_cmd "mkdir -p \"$target_path\"" && ok "Path do datastore criado." || warn "Falhou a correção do path do datastore."
+    fi
+  fi
+
+  if [[ -n "${PVE_IP:-}" ]]; then
+    if ping -c 1 -W 1 "${PVE_IP}" >/dev/null 2>&1; then
+      ok "PVE responde por rede (${PVE_IP})."
+    else
+      warn "PVE não responde por ping (${PVE_IP})."
+    fi
+  else
+    warn "PVE_IP não definido em /etc/n5pro.conf."
+  fi
+
+  if systemctl is-active proxmox-backup >/dev/null 2>&1; then
+    ok "Serviço proxmox-backup ativo."
+  else
+    warn "Serviço proxmox-backup não está ativo."
+  fi
+}
+
+show_summary() {
+  local status_label status_color health_score
+
+  if [[ "$ERR_COUNT" -gt 0 ]]; then
+    status_label="CRITICAL"
+    status_color="$RED"
+    health_score=$((100 - (ERR_COUNT * 25) - (WARN_COUNT * 8)))
+  elif [[ "$WARN_COUNT" -gt 0 ]]; then
+    status_label="WARNING"
+    status_color="$YELLOW"
+    health_score=$((100 - (WARN_COUNT * 8)))
+  else
+    status_label="HEALTHY"
+    status_color="$GREEN"
+    health_score=100
+  fi
+
+  [[ "$health_score" -lt 0 ]] && health_score=0
+
+  echo -e "$LINE"
+  echo -e "${MAGENTA}${BOLD} Resumo${RESET}"
+  echo -e "$LINE"
+  echo -e "${GREEN}OKs     : ${OK_COUNT}${RESET}"
+  echo -e "${YELLOW}Avisos  : ${WARN_COUNT}${RESET}"
+  echo -e "${RED}Erros   : ${ERR_COUNT}${RESET}"
+  echo -e "${CYAN}Score   : ${health_score}/100${RESET}"
+  echo -e "${status_color}Estado  : ${status_label}${RESET}"
+  echo -e "$LINE"
+
+  if [[ "$ERR_COUNT" -gt 0 ]]; then
+    err "Há problemas a corrigir."
+  elif [[ "$WARN_COUNT" -gt 0 ]]; then
+    warn "Está funcional, mas ainda há pontos a rever."
+  else
+    ok "Tudo parece consistente."
+  fi
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --fix) FIX_MODE="true" ;;
+    --auto) FIX_MODE="true"; AUTO_MODE="true" ;;
+    --dry-run) DRY_RUN="true" ;;
+    -h|--help) usage; exit 0 ;;
+    *) warn "Argumento ignorado: $arg" ;;
+  esac
+done
+
+check_basic
+MODE="$(detect_mode)"
+
+case "$MODE" in
+  PVE) check_pve ;;
+  PBS) check_pbs ;;
+  *) err "Sem verificações disponíveis para este ambiente." ;;
+esac
+
+show_summary
