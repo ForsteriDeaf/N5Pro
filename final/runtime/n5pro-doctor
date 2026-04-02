@@ -36,23 +36,23 @@ register_issue() {
   esac
 
   case "$severity" in
-    warn) echo -e "${YELLOW}[WARN]${RESET} $message" ;;
+    warn) issue_line "$message" ;;
     err) echo -e "${RED}[ERROR]${RESET} $message" ;;
     critical) echo -e "${RED}${BOLD}[CRITICAL]${RESET} $message" ;;
-    *) echo -e "${CYAN}[INFO]${RESET} $message" ;;
+    *) info "$message" ;;
   esac
 }
 
 mark_fixed() {
   local message="$1"
   ISSUES_FIXED=$((ISSUES_FIXED+1))
-  ok "$message"
+  fixed_line "$message"
 }
 
 mark_pending() {
   local message="$1"
   ISSUES_PENDING=$((ISSUES_PENDING+1))
-  warn "$message"
+  pending_line "$message"
 }
 
 can_auto_fix() {
@@ -176,7 +176,7 @@ fix_config_ips() {
 
   if [[ "${PVE_IP:-}" != "$expected_pve" ]]; then
     warn "PVE_IP atual='${PVE_IP:-vazio}' esperado='${expected_pve}'"
-    if confirm_fix "Queres corrigir PVE_IP para ${expected_pve}"; then
+    if ask_or_auto_fix "Queres corrigir PVE_IP para ${expected_pve}"; then
       set_config_key "PVE_IP" "$expected_pve"
       PVE_IP="$expected_pve"
       changed="true"
@@ -190,7 +190,7 @@ fix_config_ips() {
 
   if [[ "${PBS_IP:-}" != "$expected_pbs" ]]; then
     warn "PBS_IP atual='${PBS_IP:-vazio}' esperado='${expected_pbs}'"
-    if confirm_fix "Queres corrigir PBS_IP para ${expected_pbs}"; then
+    if ask_or_auto_fix "Queres corrigir PBS_IP para ${expected_pbs}"; then
       set_config_key "PBS_IP" "$expected_pbs"
       PBS_IP="$expected_pbs"
       changed="true"
@@ -204,7 +204,7 @@ fix_config_ips() {
 
   if [[ "${UNRAID_IP:-}" != "$expected_unraid" ]]; then
     warn "UNRAID_IP atual='${UNRAID_IP:-vazio}' esperado='${expected_unraid}'"
-    if confirm_fix "Queres corrigir UNRAID_IP para ${expected_unraid}"; then
+    if ask_or_auto_fix "Queres corrigir UNRAID_IP para ${expected_unraid}"; then
       set_config_key "UNRAID_IP" "$expected_unraid"
       UNRAID_IP="$expected_unraid"
       changed="true"
@@ -218,7 +218,7 @@ fix_config_ips() {
 
   if [[ "${GATEWAY:-}" != "$expected_gw" ]]; then
     warn "GATEWAY atual='${GATEWAY:-vazio}' esperado='${expected_gw}'"
-    if confirm_fix "Queres corrigir GATEWAY para ${expected_gw}"; then
+    if ask_or_auto_fix "Queres corrigir GATEWAY para ${expected_gw}"; then
       set_config_key "GATEWAY" "$expected_gw"
       GATEWAY="$expected_gw"
       changed="true"
@@ -338,20 +338,33 @@ fix_pve_add_pbs_storage() {
 
 fix_pve_create_jobs() {
   local script=""
-  if [[ -f /root/N5Pro-Wizard/final/06-PVE_PBS-CreateBackupJob.sh ]]; then
-    script="/root/N5Pro-Wizard/final/06-PVE_PBS-CreateBackupJob.sh"
-  elif [[ -f /root/N5Pro-Wizard/final/07-PVE_PBS-CreateBackupJob.sh ]]; then
-    script="/root/N5Pro-Wizard/final/07-PVE_PBS-CreateBackupJob.sh"
+  local base="${REPO_ROOT:-/opt/n5pro}"
+  local final_dir="${base}/final"
+  local pve_dir="${final_dir}/pve"
+
+  if [[ -f "${pve_dir}/05-PVE-CreatePBSBackupJob.sh" ]]; then
+    script="${pve_dir}/05-PVE-CreatePBSBackupJob.sh"
+    info "Script jobs PBS detectado: 05-PVE-CreatePBSBackupJob.sh"
+  elif [[ -f "${final_dir}/06-PVE_PBS-CreateBackupJob.sh" ]]; then
+    script="${final_dir}/06-PVE_PBS-CreateBackupJob.sh"
+    info "Wrapper de compatibilidade: 06 -> 05-PVE-CreatePBSBackupJob.sh"
+  elif [[ -f "${final_dir}/07-PVE_PBS-CreateBackupJob.sh" ]]; then
+    script="${final_dir}/07-PVE_PBS-CreateBackupJob.sh"
+    info "Wrapper de compatibilidade: 07 -> 05-PVE-CreatePBSBackupJob.sh"
   fi
 
-  [[ -n "$script" ]] || { warn "Script de criação de jobs PBS não encontrado."; return 1; }
+  [[ -n "$script" ]] || {
+    warn "Script de criação de jobs PBS não encontrado em ${pve_dir} nem wrappers legacy."
+    return 1
+  }
 
   if [[ "$DRY_RUN" == "true" ]]; then
     info "[DRY-RUN] bash $script"
     return 0
   fi
 
-  bash "$script"
+  AUTO_MODE="${AUTO_MODE:-false}" bash "$script"
+
 }
 
 check_pve() {
@@ -432,21 +445,32 @@ check_pve() {
     local jobs
     jobs="$(pvesh get /cluster/backup --output-format json 2>/dev/null || true)"
 
-  if echo "$jobs" | grep -q 'auto-pbs'; then
-    ok "Jobs automáticos PBS encontrados."
-  else
-    register_issue warn "Jobs automáticos PBS não encontrados."
-    if ask_or_auto_fix "Criar automaticamente os jobs PBS?"; then
-      if fix_pve_create_jobs; then
-        mark_fixed "Jobs PBS criados/corrigidos."
-      else
-        mark_pending "Falhou a correção dos jobs PBS."
-      fi
+    if echo "$jobs" | grep -q 'auto-pbs'; then
+      ok "Jobs automáticos PBS encontrados."
     else
-      mark_pending "Jobs PBS ficaram por criar."
-    fi
-  fi
+      local eligible_vmids
+      eligible_vmids="$(
+        {
+          qm list 2>/dev/null | awk 'NR>1 {print $1}'
+          pct list 2>/dev/null | awk 'NR>1 {print $1}'
+        } | sort -n | uniq | grep -Ev "^(${PBS_VMID}|${UNRAID_VMID})$" || true
+      )"
 
+      if [[ -z "${eligible_vmids//[[:space:]]/}" ]]; then
+        ok "Nenhum guest elegível — jobs PBS não necessários."
+      else
+        register_issue warn "Jobs automáticos PBS não encontrados."
+        if ask_or_auto_fix "Criar automaticamente os jobs PBS?"; then
+          if fix_pve_create_jobs; then
+            mark_fixed "Jobs PBS criados/corrigidos."
+          else
+            mark_pending "Falhou a correção dos jobs PBS."
+          fi
+        else
+          mark_pending "Jobs PBS ficaram por criar."
+        fi
+      fi
+    fi
   else
     warn "Não foi possível ler jobs de backup no PVE."
   fi
@@ -523,10 +547,16 @@ check_pbs() {
   if echo "$ds_json" | jq -e --arg n "$datastore_name" '.[] | select(.name==$n)' >/dev/null 2>&1; then
     ok "Datastore '${datastore_name}' existe."
   else
-    warn "Datastore '${datastore_name}' não existe."
-    if confirm_fix "Queres criar automaticamente o datastore '${datastore_name}'"; then
-      fix_pbs_create_datastore && ok "Datastore PBS criado." || warn "Falhou a correção do datastore PBS."
-      ds_json="$(proxmox-backup-manager datastore list --output-format json 2>/dev/null || echo '[]')"
+    register_issue warn "Datastore '${datastore_name}' não existe."
+    if ask_or_auto_fix "Criar automaticamente o datastore '${datastore_name}'?"; then
+      if fix_pbs_create_datastore; then
+        mark_fixed "Datastore PBS criado."
+        ds_json="$(proxmox-backup-manager datastore list --output-format json 2>/dev/null || echo '[]')"
+      else
+        mark_pending "Falhou a correção do datastore PBS."
+      fi
+    else
+      mark_pending "Datastore PBS ficou por criar."
     fi
   fi
 
@@ -556,18 +586,30 @@ check_pbs() {
   if findmnt "$mount_root" >/dev/null 2>&1; then
     ok "${mount_root} está montado."
   else
-    warn "${mount_root} não está montado."
-    if confirm_fix "Queres montar automaticamente ${mount_root}"; then
-      fix_pbs_mount_datastore && ok "Mount PBS corrigido." || warn "Falhou a correção do mount PBS."
+    register_issue warn "${mount_root} não está montado."
+    if ask_or_auto_fix "Montar automaticamente ${mount_root}?"; then
+      if fix_pbs_mount_datastore; then
+        mark_fixed "Mount PBS corrigido."
+      else
+        mark_pending "Falhou a correção do mount PBS."
+      fi
+    else
+      mark_pending "Mount PBS ficou por corrigir."
     fi
   fi
 
   if [[ -d "$target_path" ]]; then
     ok "Path ${target_path} existe."
   else
-    warn "Path ${target_path} não existe."
-    if confirm_fix "Queres criar automaticamente ${target_path}"; then
-      run_cmd "mkdir -p \"$target_path\"" && ok "Path do datastore criado." || warn "Falhou a correção do path do datastore."
+    register_issue warn "Path ${target_path} não existe."
+    if ask_or_auto_fix "Criar automaticamente ${target_path}?"; then
+      if run_cmd "mkdir -p \"$target_path\""; then
+        mark_fixed "Path do datastore criado."
+      else
+        mark_pending "Falhou a correção do path do datastore."
+      fi
+    else
+      mark_pending "Path do datastore ficou por criar."
     fi
   fi
 
@@ -584,8 +626,9 @@ check_pbs() {
   if systemctl is-active proxmox-backup >/dev/null 2>&1; then
     ok "Serviço proxmox-backup ativo."
   else
-    warn "Serviço proxmox-backup não está ativo."
+    register_issue warn "Serviço proxmox-backup não está ativo."
   fi
+
 }
 
 show_summary() {

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -e
+AUTO_MODE="${AUTO_MODE:-false}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f /usr/local/lib/n5pro/common.sh ]]; then
  # shellcheck disable=SC1091
@@ -24,12 +26,20 @@ PROFILE="$(ask_default "Perfil de retenção (temp/final)" "temp")"
 
 print_step "STEP 1" "Recolher guests elegíveis"
 EXCLUDE_REGEX="^(${PBS_VMID}|${UNRAID_VMID})$"
-ALL_VMIDS="$({
- qm list 2>/dev/null | awk 'NR>1 {print $1}'
- pct list 2>/dev/null | awk 'NR>1 {print $1}'
-} | sort -n | uniq | grep -Ev "${EXCLUDE_REGEX}")"
 
-[[ -n "$ALL_VMIDS" ]] || die "Nenhum guest encontrado para backup."
+ALL_VMIDS="$(
+  {
+    qm list 2>/dev/null | awk 'NR>1 {print $1}'
+    pct list 2>/dev/null | awk 'NR>1 {print $1}'
+  } | sort -n | uniq | grep -Ev "${EXCLUDE_REGEX}" || true
+)"
+
+if [[ -z "${ALL_VMIDS//[[:space:]]/}" ]]; then
+  warn "Nenhum guest elegível encontrado para criar jobs PBS."
+  info "Apenas PBS (${PBS_VMID}) e Unraid (${UNRAID_VMID}) foram excluídos."
+  exit 0
+fi
+
 info "Guests detetados: $(echo "$ALL_VMIDS" | xargs echo)"
 
 print_step "STEP 2" "Classificar por tamanho"

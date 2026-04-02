@@ -29,6 +29,9 @@ check_line(){ echo -e "${BLUE}[CHECK]${RESET} $1"; }
 ok_line(){ echo -e "${GREEN}[OK]${RESET} $1"; }
 warn_line(){ echo -e "${YELLOW}[WARN]${RESET} $1"; }
 fail_line(){ echo -e "${RED}[FAIL]${RESET} $1"; }
+issue_line(){ echo -e "${YELLOW}[ISSUE]${RESET} $1"; }
+fixed_line(){ echo -e "${GREEN}[FIXED]${RESET} $1"; }
+pending_line(){ echo -e "${MAGENTA}[PENDING]${RESET} $1"; }
 
 load_n5pro_config() {
   if [[ -f "$N5PRO_CONFIG_FILE" ]]; then
@@ -117,12 +120,18 @@ backup_file(){
  cp -a "$f" "$dst"
 }
 
-ask_default(){
- local prompt="$1"
- local default="$2"
- local reply
- read -rp "$(echo -e "${CYAN}${prompt} [${default}]: ${RESET}")" reply
- echo "${reply:-$default}"
+ask_default() {
+  local prompt="$1"
+  local default="$2"
+  local reply
+
+  if [[ "${AUTO_MODE:-false}" == "true" ]]; then
+    echo "$default"
+    return 0
+  fi
+
+  read -rp "${prompt} [${default}]: " reply
+  echo "${reply:-$default}"
 }
 
 confirm(){

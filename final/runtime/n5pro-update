@@ -68,10 +68,6 @@ validate_structure() {
     n5pro-post
     n5pro-update
     n5pro-doctor
-    n5pro-backup
-    n5pro-version
-    n5pro-bootstrap-pbs
-    n5pro-repo-safe
   )
 
   local f
@@ -100,13 +96,6 @@ backup_current_state() {
     /usr/local/bin/n5pro-post
     /usr/local/bin/n5pro-update
     /usr/local/bin/n5pro-doctor
-    /usr/local/bin/n5pro-backup
-    /usr/local/bin/n5pro-version
-    /usr/local/bin/n5pro-bootstrap-pbs
-    /usr/local/bin/n5pro-repo-safe
-    /usr/local/bin/n5pro-heal
-    /usr/local/bin/n5pro-log
-    /usr/local/bin/n5pro-cron
   )
 
   local f
@@ -146,13 +135,6 @@ install_runtime() {
     n5pro-post
     n5pro-update
     n5pro-doctor
-    n5pro-backup
-    n5pro-version
-    n5pro-bootstrap-pbs
-    n5pro-repo-safe
-    n5pro-heal
-    n5pro-log
-    n5pro-cron
   )
 
   local f
