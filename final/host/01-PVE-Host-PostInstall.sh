@@ -121,6 +121,7 @@ write_config() {
   backup_file /etc/n5pro.conf
   cat >/etc/n5pro.conf <<EOF
 N5PRO_REPO_BASE="${N5PRO_REPO_BASE}"
+REPO_ROOT="/opt/n5pro"
 PVE_IP="${PVE_IP}"
 UNRAID_IP="${UNRAID_IP}"
 PBS_IP="${PBS_IP}"
@@ -433,7 +434,33 @@ EOF
   ok "Bash configurado."
 }
 
-install_common_local
+install_common_local() {
+  print_step "STEP 0" "Instalar common.sh local"
+  mkdir -p /usr/local/lib/n5pro
+
+  if [[ -f /usr/local/lib/n5pro/common.sh ]]; then
+    cp -a /usr/local/lib/n5pro/common.sh /usr/local/lib/n5pro/common.sh >/dev/null 2>&1 || true
+    info "common.sh local já disponível em /usr/local/lib/n5pro/common.sh"
+    return 0
+  fi
+
+  if [[ -f "${REPO_ROOT:-/opt/n5pro}/final/lib/common.sh" ]]; then
+    cp -a "${REPO_ROOT:-/opt/n5pro}/final/lib/common.sh" /usr/local/lib/n5pro/common.sh
+    chmod 644 /usr/local/lib/n5pro/common.sh
+    ok "common.sh instalado em /usr/local/lib/n5pro/common.sh"
+    return 0
+  fi
+
+  if [[ -f "${SCRIPT_DIR}/../lib/common.sh" ]]; then
+    cp -a "${SCRIPT_DIR}/../lib/common.sh" /usr/local/lib/n5pro/common.sh
+    chmod 644 /usr/local/lib/n5pro/common.sh
+    ok "common.sh instalado em /usr/local/lib/n5pro/common.sh"
+    return 0
+  fi
+
+  warn "common.sh do repo não encontrado; a execução continua com o common já carregado."
+}
+
 configure_repos
 system_upgrade
 handle_local_lvm
