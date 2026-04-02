@@ -2,7 +2,8 @@
 
 set -e
 
-REPO_BASE="https://raw.githubusercontent.com/ForsteriDeaf/N5Pro-Wizard/main/final"
+REPO_BASE="https://raw.githubusercontent.com/ForsteriDeaf/N5Pro/main/final"
+RUNTIME_BASE="${REPO_BASE}/runtime"
 
 echo "[INFO] N5Pro Bootstrap iniciado..."
 
@@ -22,11 +23,12 @@ FILES=(
     n5pro-backup
     n5pro-version
     n5pro-bootstrap-pbs
+    n5pro-repo-safe
 )
 
 # download
 for f in "${FILES[@]}"; do
-    curl -sO "$REPO_BASE/$f"
+    curl --fail --silent --show-error --location --retry 3 -o "$f" "${RUNTIME_BASE}/${f}"
     chmod +x "$f"
 done
 
@@ -40,7 +42,6 @@ done
 
 echo "[INFO] Instalar em /usr/local/bin..."
 
-# instalação segura
 for f in "${FILES[@]}"; do
     cp "$f" /usr/local/bin/
 done
@@ -49,11 +50,13 @@ echo "[INFO] Criar config base (se não existir)..."
 
 if [[ ! -f /etc/n5pro.conf ]]; then
     cat > /etc/n5pro.conf <<EOF
-N5PRO_REPO_BASE="$REPO_BASE"
+N5PRO_REPO_BASE="${REPO_BASE}"
 EOF
     echo "[OK] /etc/n5pro.conf criado"
+else
+    echo "[INFO] /etc/n5pro.conf já existe, mantido."
 fi
 
 echo "[OK] Bootstrap concluído!"
-echo ""
+echo
 echo "👉 Executa: n5pro"
