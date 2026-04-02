@@ -12,7 +12,7 @@ acquire_lock() {
 
 acquire_lock
 
-REPO_ROOT="/root/N5Pro-Wizard"
+REPO_ROOT="${REPO_ROOT:-/opt/n5pro}"
 FINAL_DIR="${REPO_ROOT}/final"
 RUNTIME_DIR="${FINAL_DIR}/runtime"
 HOST_DIR="${FINAL_DIR}/host"

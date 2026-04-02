@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -e
+source /usr/local/lib/n5pro/common.sh
+load_n5pro_config
 
 RED="\033[38;5;196m"
 GREEN="\033[38;5;10m"

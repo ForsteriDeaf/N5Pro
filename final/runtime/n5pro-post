@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -e
+source /usr/local/lib/n5pro/common.sh
+load_n5pro_config
+
 
 [[ -f /etc/n5pro.conf ]] || { echo "[ERRO] /etc/n5pro.conf não encontrado"; exit 1; }
 # shellcheck disable=SC1091
