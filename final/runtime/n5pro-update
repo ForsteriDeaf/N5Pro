@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -e
+
+# shellcheck disable=SC1091
+source /usr/local/lib/n5pro/common.sh
+
+acquire_lock() {
+  LOCK_FILE="/tmp/n5pro-update.lock"
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || die "Outro n5pro-update já está em execução."
+}
+
+acquire_lock
+
+REPO_ROOT="/root/N5Pro-Wizard"
+FINAL_DIR="${REPO_ROOT}/final"
+RUNTIME_DIR="${FINAL_DIR}/runtime"
+HOST_DIR="${FINAL_DIR}/host"
+PVE_DIR="${FINAL_DIR}/pve"
+PBS_DIR="${FINAL_DIR}/pbs"
+LIB_DIR="${FINAL_DIR}/lib"
+EXAMPLES_DIR="${FINAL_DIR}/examples"
+
+BACKUP_ROOT="/root/.n5pro-update-backups"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
+
+INSTALL_MODE="false"
+[[ "${1:-}" == "--install" ]] && INSTALL_MODE="true"
+
+print_header "N5Pro Update"
+
+[[ "$EUID" -eq 0 ]] || die "Corre este script como root."
+[[ -d "$REPO_ROOT" ]] || die "Repo não encontrado em ${REPO_ROOT}"
+[[ -d "$FINAL_DIR" ]] || die "Diretório final não encontrado em ${FINAL_DIR}"
+[[ -d "$RUNTIME_DIR" ]] || die "Diretório runtime não encontrado em ${RUNTIME_DIR}"
+[[ -d "$LIB_DIR" ]] || die "Diretório lib não encontrado em ${LIB_DIR}"
+
+mkdir -p "$BACKUP_DIR"
+mkdir -p /usr/local/lib/n5pro
+mkdir -p /usr/local/bin
+
+backup_if_exists() {
+  local f="$1"
+  [[ -e "$f" ]] || return 0
+  mkdir -p "$BACKUP_DIR"
+  cp -a "$f" "$BACKUP_DIR"/
+}
+
+detect_version_file() {
+  if [[ -f "${REPO_ROOT}/VERSION" ]]; then
+    echo "${REPO_ROOT}/VERSION"
+  elif [[ -f "${FINAL_DIR}/VERSION" ]]; then
+    echo "${FINAL_DIR}/VERSION"
+  else
+    echo ""
+  fi
+}
+
+validate_structure() {
+  info "Validar estrutura do repo..."
+
+  [[ -f "${FINAL_DIR}/bootstrap.sh" ]] || die "Falta ${FINAL_DIR}/bootstrap.sh"
+  [[ -f "${LIB_DIR}/common.sh" ]] || die "Falta ${LIB_DIR}/common.sh"
+
+  local runtime_required=(
+    n5pro
+    n5pro-post
+    n5pro-update
+    n5pro-doctor
+    n5pro-backup
+    n5pro-version
+    n5pro-bootstrap-pbs
+    n5pro-repo-safe
+  )
+
+  local f
+  for f in "${runtime_required[@]}"; do
+    [[ -f "${RUNTIME_DIR}/${f}" ]] || warn "Runtime em falta: ${RUNTIME_DIR}/${f}"
+  done
+
+  ok "Estrutura validada."
+}
+
+sync_git() {
+  info "Sincronizar repo local..."
+  cd "$REPO_ROOT"
+  git pull --rebase origin main || warn "Não foi possível sincronizar via git pull --rebase origin main."
+}
+
+backup_current_state() {
+  info "Criar backup dos ficheiros atuais..."
+
+  backup_if_exists /usr/local/lib/n5pro/common.sh
+  backup_if_exists /usr/local/lib/n5pro/VERSION
+  backup_if_exists /etc/n5pro.conf
+
+  local runtime_files=(
+    /usr/local/bin/n5pro
+    /usr/local/bin/n5pro-post
+    /usr/local/bin/n5pro-update
+    /usr/local/bin/n5pro-doctor
+    /usr/local/bin/n5pro-backup
+    /usr/local/bin/n5pro-version
+    /usr/local/bin/n5pro-bootstrap-pbs
+    /usr/local/bin/n5pro-repo-safe
+    /usr/local/bin/n5pro-heal
+    /usr/local/bin/n5pro-log
+    /usr/local/bin/n5pro-cron
+  )
+
+  local f
+  for f in "${runtime_files[@]}"; do
+    backup_if_exists "$f"
+  done
+
+  ok "Backup criado."
+}
+
+fix_permissions_and_validate_syntax() {
+  info "Corrigir permissões e validar sintaxe bash..."
+
+  local sh_files=()
+  while IFS= read -r -d '' f; do
+    sh_files+=("$f")
+  done < <(find "$FINAL_DIR" -type f \( -name "*.sh" -o -path "${RUNTIME_DIR}/*" \) -print0)
+
+  local f
+  for f in "${sh_files[@]}"; do
+    chmod +x "$f" || true
+  done
+
+  ok "Permissões corrigidas."
+
+  for f in "${sh_files[@]}"; do
+    bash -n "$f"
+    ok "Sintaxe OK: $(basename "$f")"
+  done
+}
+
+install_runtime() {
+  info "Instalar runtime local..."
+
+  local runtime_files=(
+    n5pro
+    n5pro-post
+    n5pro-update
+    n5pro-doctor
+    n5pro-backup
+    n5pro-version
+    n5pro-bootstrap-pbs
+    n5pro-repo-safe
+    n5pro-heal
+    n5pro-log
+    n5pro-cron
+  )
+
+  local f
+  for f in "${runtime_files[@]}"; do
+    if [[ -f "${RUNTIME_DIR}/${f}" ]]; then
+      cp -a "${RUNTIME_DIR}/${f}" "/usr/local/bin/${f}"
+      chmod +x "/usr/local/bin/${f}"
+      ok "Instalado: /usr/local/bin/${f}"
+    fi
+  done
+
+  cp -a "${LIB_DIR}/common.sh" /usr/local/lib/n5pro/common.sh
+  chmod 644 /usr/local/lib/n5pro/common.sh
+  ok "Instalado: /usr/local/lib/n5pro/common.sh"
+
+  VERSION_FILE="$(detect_version_file)"
+  if [[ -n "$VERSION_FILE" ]]; then
+    cp -a "$VERSION_FILE" /usr/local/lib/n5pro/VERSION
+    ok "VERSION local atualizado."
+  else
+    warn "VERSION não encontrado no repo; versão local não foi atualizada."
+  fi
+}
+
+show_summary() {
+  echo -e "$LINE"
+  ok "Atualização concluída com sucesso."
+  info "Backup guardado em: ${BACKUP_DIR}"
+  if [[ "$INSTALL_MODE" == "true" ]]; then
+    ok "Modo --install aplicado."
+  else
+    warn "Para reinstalar também os binários locais, usa: n5pro-update --install"
+  fi
+  echo -e "$LINE"
+}
+
+validate_structure
+sync_git
+backup_current_state
+fix_permissions_and_validate_syntax
+
+if [[ "$INSTALL_MODE" == "true" ]]; then
+  install_runtime
+fi
+
+show_summary
