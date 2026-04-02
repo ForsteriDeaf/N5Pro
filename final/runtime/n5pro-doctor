@@ -20,6 +20,62 @@ FIX_MODE="false"
 AUTO_MODE="false"
 DRY_RUN="false"
 
+ISSUES_FOUND=0
+ISSUES_FIXED=0
+ISSUES_PENDING=0
+
+register_issue() {
+  local severity="$1"
+  local message="$2"
+
+  ISSUES_FOUND=$((ISSUES_FOUND+1))
+
+  case "$severity" in
+    warn) WARN_COUNT=$((WARN_COUNT+1)) ;;
+    err|critical) ERR_COUNT=$((ERR_COUNT+1)) ;;
+  esac
+
+  case "$severity" in
+    warn) echo -e "${YELLOW}[WARN]${RESET} $message" ;;
+    err) echo -e "${RED}[ERROR]${RESET} $message" ;;
+    critical) echo -e "${RED}${BOLD}[CRITICAL]${RESET} $message" ;;
+    *) echo -e "${CYAN}[INFO]${RESET} $message" ;;
+  esac
+}
+
+mark_fixed() {
+  local message="$1"
+  ISSUES_FIXED=$((ISSUES_FIXED+1))
+  ok "$message"
+}
+
+mark_pending() {
+  local message="$1"
+  ISSUES_PENDING=$((ISSUES_PENDING+1))
+  warn "$message"
+}
+
+can_auto_fix() {
+  [[ "$AUTO_MODE" == "true" ]]
+}
+
+ask_or_auto_fix() {
+  local prompt="$1"
+
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    return 0
+  fi
+
+  if [[ "$FIX_MODE" == "true" ]]; then
+    local ans
+    read -rp "$prompt [y/N]: " ans
+    [[ "${ans,,}" =~ ^y(es)?$ ]]
+    return
+  fi
+
+  return 1
+}
+
 ok(){ echo -e "${GREEN}[OK]${RESET} $*"; OK_COUNT=$((OK_COUNT+1)); }
 warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; WARN_COUNT=$((WARN_COUNT+1)); }
 err(){ echo -e "${RED}[ERRO]${RESET} $*"; ERR_COUNT=$((ERR_COUNT+1)); }
@@ -124,7 +180,9 @@ fix_config_ips() {
       set_config_key "PVE_IP" "$expected_pve"
       PVE_IP="$expected_pve"
       changed="true"
-      ok "PVE_IP corrigido."
+      mark_fixed "PVE_IP corrigido."
+    else
+      mark_pending "PVE_IP ficou por corrigir."
     fi
   else
     ok "PVE_IP correto."
@@ -136,7 +194,9 @@ fix_config_ips() {
       set_config_key "PBS_IP" "$expected_pbs"
       PBS_IP="$expected_pbs"
       changed="true"
-      ok "PBS_IP corrigido."
+      mark_fixed "PBS_IP corrigido."
+    else
+      mark_pending "PBS_IP ficou por corrigir."
     fi
   else
     ok "PBS_IP correto."
@@ -148,7 +208,9 @@ fix_config_ips() {
       set_config_key "UNRAID_IP" "$expected_unraid"
       UNRAID_IP="$expected_unraid"
       changed="true"
-      ok "UNRAID_IP corrigido."
+      mark_fixed "UNRAID_IP corrigido."
+    else
+      mark_pending "UNRAID_IP ficou por corrigir."
     fi
   else
     ok "UNRAID_IP correto."
@@ -160,7 +222,9 @@ fix_config_ips() {
       set_config_key "GATEWAY" "$expected_gw"
       GATEWAY="$expected_gw"
       changed="true"
-      ok "GATEWAY corrigido."
+      mark_fixed "GATEWAY corrigido."
+    else
+      mark_pending "GATEWAY ficou por corrigir."
     fi
   else
     ok "GATEWAY correto."
@@ -301,18 +365,18 @@ check_pve() {
   need_cmd pvesh
   need_cmd openssl
 
-  fix_config_ips
+  fix_config_ips || true
 
   if pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'NVMe-Containers'; then
     ok "Storage NVMe-Containers existe."
   else
-    err "Storage NVMe-Containers não existe."
+    register_issue err "Storage NVMe-Containers não existe."
   fi
 
   if grep -Eiq 'iommu=pt|intel_iommu=on|amd_iommu=on' /proc/cmdline; then
     ok "IOMMU ativa no kernel."
   else
-    err "IOMMU não parece ativa em /proc/cmdline."
+    register_issue err "IOMMU não parece ativa em /proc/cmdline."
   fi
 
   check_pve_vm_identity "${PBS_VMID:-110}" "PBServer" "${PBS_MAC:-BC:24:11:05:01:10}"
@@ -352,23 +416,37 @@ check_pve() {
   if pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$pbs_storage_name"; then
     ok "Storage PBS '${pbs_storage_name}' existe no PVE."
   else
-    warn "Storage PBS '${pbs_storage_name}' ainda não existe no PVE."
-    if confirm_fix "Queres adicionar automaticamente o storage PBS no PVE"; then
-      fix_pve_add_pbs_storage && ok "Storage PBS adicionado." || warn "Falhou a correção do storage PBS."
+    register_issue warn "Storage PBS '${pbs_storage_name}' ainda não existe no PVE."
+    if ask_or_auto_fix "Adicionar automaticamente o storage PBS no PVE?"; then
+      if fix_pve_add_pbs_storage; then
+        mark_fixed "Storage PBS adicionado."
+      else
+        mark_pending "Falhou a correção do storage PBS."
+      fi
+    else
+      mark_pending "Storage PBS ficou por adicionar."
     fi
   fi
 
   if pvesh get /cluster/backup --output-format json >/dev/null 2>&1; then
     local jobs
     jobs="$(pvesh get /cluster/backup --output-format json 2>/dev/null || true)"
-    if echo "$jobs" | grep -q 'auto-pbs'; then
-      ok "Jobs automáticos PBS encontrados."
-    else
-      warn "Jobs automáticos PBS não encontrados."
-      if confirm_fix "Queres criar automaticamente os jobs PBS"; then
-        fix_pve_create_jobs && ok "Jobs PBS criados/corrigidos." || warn "Falhou a correção dos jobs PBS."
+
+  if echo "$jobs" | grep -q 'auto-pbs'; then
+    ok "Jobs automáticos PBS encontrados."
+  else
+    register_issue warn "Jobs automáticos PBS não encontrados."
+    if ask_or_auto_fix "Criar automaticamente os jobs PBS?"; then
+      if fix_pve_create_jobs; then
+        mark_fixed "Jobs PBS criados/corrigidos."
+      else
+        mark_pending "Falhou a correção dos jobs PBS."
       fi
+    else
+      mark_pending "Jobs PBS ficaram por criar."
     fi
+  fi
+
   else
     warn "Não foi possível ler jobs de backup no PVE."
   fi
@@ -376,8 +454,9 @@ check_pve() {
   if pvesm list local 2>/dev/null | awk 'NR>1 {print $1}' | grep -Ei 'proxmox-backup-server.*\.iso|pbs.*\.iso' >/dev/null 2>&1; then
     ok "ISO PBS encontrado em local:iso."
   else
-    warn "ISO PBS não encontrado em local:iso."
+    register_issue warn "ISO PBS não encontrado em local:iso."
   fi
+
 }
 
 fix_pbs_mount_datastore() {
@@ -426,7 +505,7 @@ check_pbs() {
   need_cmd findmnt
   need_cmd jq
 
-  fix_config_ips
+  fix_config_ips || true
 
   local datastore_name mount_root target_path ds_json
   datastore_name="${PBS_DATASTORE:-usb-temp}"
@@ -534,6 +613,9 @@ show_summary() {
   echo -e "${GREEN}OKs     : ${OK_COUNT}${RESET}"
   echo -e "${YELLOW}Avisos  : ${WARN_COUNT}${RESET}"
   echo -e "${RED}Erros   : ${ERR_COUNT}${RESET}"
+  echo -e "${CYAN}Issues  : ${ISSUES_FOUND}${RESET}"
+  echo -e "${GREEN}Fixes   : ${ISSUES_FIXED}${RESET}"
+  echo -e "${YELLOW}Pend.   : ${ISSUES_PENDING}${RESET}"
   echo -e "${CYAN}Score   : ${health_score}/100${RESET}"
   echo -e "${status_color}Estado  : ${status_label}${RESET}"
   echo -e "$LINE"
