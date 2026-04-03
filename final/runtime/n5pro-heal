@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -e
+
+# shellcheck disable=SC1091
+source /usr/local/lib/n5pro/common.sh
+
+acquire_lock
+load_n5pro_config
+
+WITH_BOOTSTRAP="false"
+AUTO_MODE="false"
+DRY_RUN="false"
+
+usage() {
+  cat <<USAGE
+Uso:
+  n5pro-heal
+  n5pro-heal --with-bootstrap
+  n5pro-heal --auto
+  n5pro-heal --auto --with-bootstrap
+  n5pro-heal --dry-run
+
+Opções:
+  --with-bootstrap   Corre bootstrap PBS antes do doctor
+  --auto             Usa n5pro-doctor --auto
+  --dry-run          Usa n5pro-doctor --fix --dry-run
+USAGE
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --with-bootstrap) WITH_BOOTSTRAP="true" ;;
+    --auto) AUTO_MODE="true" ;;
+    --dry-run) DRY_RUN="true" ;;
+    -h|--help) usage; exit 0 ;;
+    *) warn "Argumento ignorado: $arg" ;;
+  esac
+done
+
+print_header "N5Pro Heal"
+
+MODE="UNKNOWN"
+if command -v pveversion >/dev/null 2>&1; then
+  MODE="PVE"
+elif command -v proxmox-backup-manager >/dev/null 2>&1; then
+  MODE="PBS"
+fi
+
+info "Modo detetado: $MODE"
+
+if [[ "$MODE" != "PVE" && "$MODE" != "PBS" ]]; then
+  die "Ambiente não suportado."
+fi
+
+if [[ "$MODE" == "PBS" && "$WITH_BOOTSTRAP" == "true" ]]; then
+  warn "--with-bootstrap ignorado na PBS."
+  WITH_BOOTSTRAP="false"
+fi
+
+info "Passo 1/4: diagnóstico inicial"
+if [[ "$DRY_RUN" == "true" ]]; then
+  n5pro-doctor --fix --dry-run || true
+else
+  n5pro-doctor || true
+fi
+
+if [[ "$MODE" == "PVE" && "$WITH_BOOTSTRAP" == "true" ]]; then
+  info "Passo 2/4: bootstrap PBS"
+  if confirm "Queres executar bootstrap PBS agora"; then
+    n5pro-bootstrap-pbs
+    ok "Bootstrap PBS concluído."
+  else
+    warn "Bootstrap PBS cancelado."
+  fi
+else
+  info "Passo 2/4: bootstrap PBS omitido"
+fi
+
+info "Passo 3/4: correção"
+if [[ "$DRY_RUN" == "true" ]]; then
+  n5pro-doctor --fix --dry-run || true
+elif [[ "$AUTO_MODE" == "true" ]]; then
+  n5pro-doctor --auto || true
+else
+  n5pro-doctor --fix || true
+fi
+
+info "Passo 4/4: validação final"
+n5pro-doctor || true
+
+echo -e "$LINE"
+ok "N5Pro Heal concluído."
+if [[ "$DRY_RUN" == "true" ]]; then
+  info "Modo dry-run: nenhuma alteração foi aplicada."
+fi
+echo -e "$LINE"

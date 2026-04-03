@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -e
+
+LOCAL_VERSION_FILE="/usr/local/lib/n5pro/VERSION"
+
+load_config() {
+  if [[ -f /etc/n5pro.conf ]]; then
+    # shellcheck disable=SC1091
+    source /etc/n5pro.conf
+  fi
+}
+
+normalize_version() {
+  sed -e 's/^[[:space:]]*echo[[:space:]]*//' \
+      -e 's/^"//' -e 's/"$//' \
+      -e "s/^'//" -e "s/'$//" \
+      -e 's/[[:space:]]*$//' \
+      -e '/^$/d' \
+  | head -n1
+}
+
+get_local() {
+  if [[ -f "$LOCAL_VERSION_FILE" ]]; then
+    cat "$LOCAL_VERSION_FILE" | normalize_version
+  else
+    echo "unknown"
+  fi
+}
+
+get_remote() {
+  load_config
+  if [[ -z "${N5PRO_REPO_BASE:-}" ]]; then
+    echo "unknown"
+    return 0
+  fi
+
+  curl -fsSL "${N5PRO_REPO_BASE}/VERSION" 2>/dev/null | normalize_version || echo "unknown"
+}
+
+show_usage() {
+  cat <<USAGE
+Uso:
+  n5pro-version local
+  n5pro-version remote
+  n5pro-version check
+  n5pro-version set <versao>
+USAGE
+}
+
+cmd="${1:-check}"
+
+case "$cmd" in
+  local)
+    get_local
+    ;;
+  remote)
+    get_remote
+    ;;
+  check)
+    LOCAL_V="$(get_local)"
+    REMOTE_V="$(get_remote)"
+
+    echo "Local : $LOCAL_V"
+    echo "Remote: $REMOTE_V"
+
+    if [[ "$REMOTE_V" == "unknown" ]]; then
+      echo "[WARN] Não foi possível verificar a versão remota."
+    elif [[ "$LOCAL_V" != "$REMOTE_V" ]]; then
+      echo "[INFO] Update disponível."
+    else
+      echo "[OK] Sistema atualizado."
+    fi
+    ;;
+  set)
+    [[ -n "${2:-}" ]] || { echo "[ERRO] Falta a versão."; exit 1; }
+    mkdir -p "$(dirname "$LOCAL_VERSION_FILE")"
+    echo "$2" > "$LOCAL_VERSION_FILE"
+    echo "[OK] Versão local atualizada para: $2"
+    ;;
+  -h|--help|help)
+    show_usage
+    ;;
+  *)
+    echo "[ERRO] Comando inválido: $cmd"
+    show_usage
+    exit 1
+    ;;
+esac

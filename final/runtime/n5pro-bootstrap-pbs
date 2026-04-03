@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+set -e
+
+RED="\033[38;5;196m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+CYAN="\033[38;5;14m"
+MAGENTA="\033[38;5;13m"
+BOLD="\033[1m"
+RESET="\033[0m"
+LINE="==========================================================="
+
+ok(){ echo -e "${GREEN}[OK]${RESET} $*"; }
+warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; }
+err(){ echo -e "${RED}[ERRO]${RESET} $*"; exit 1; }
+info(){ echo -e "${CYAN}[INFO]${RESET} $*"; }
+
+[[ "$EUID" -eq 0 ]] || err "Corre como root no PVE."
+[[ -f /etc/n5pro.conf ]] || err "/etc/n5pro.conf não encontrado no PVE."
+
+# shellcheck disable=SC1091
+source /etc/n5pro.conf
+
+PBS_TARGET_IP="${1:-${PBS_IP:-}}"
+[[ -n "$PBS_TARGET_IP" ]] || err "PBS_IP não definido."
+
+command -v ssh >/dev/null 2>&1 || err "ssh não encontrado."
+command -v scp >/dev/null 2>&1 || err "scp não encontrado."
+
+echo -e "$LINE"
+echo -e "${MAGENTA}${BOLD} N5Pro Bootstrap PBS v2${RESET}"
+echo -e "$LINE"
+info "Destino PBS: ${PBS_TARGET_IP}"
+
+if ! ping -c 1 -W 1 "$PBS_TARGET_IP" >/dev/null 2>&1; then
+  warn "PBS não respondeu por ping, vou tentar SSH na mesma."
+fi
+
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+cp -a /etc/n5pro.conf "$TMPDIR"/n5pro.conf
+
+cat >"$TMPDIR"/n5pro <<'EOF2'
+#!/usr/bin/env bash
+
+LINE="==========================================================="
+RED="\033[38;5;196m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+CYAN="\033[38;5;14m"
+BOLD="\033[1m"
+RESET="\033[0m"
+
+show_status() {
+  clear
+  echo -e "$LINE"
+  echo -e "${RED} N5Pro PBS Dashboard ${RESET}"
+  echo -e "$LINE"
+
+  [[ -f /etc/n5pro.conf ]] && source /etc/n5pro.conf
+
+  echo "[CHECK] Repo base..."; echo "${N5PRO_REPO_BASE:-não configurado}"
+  echo "[CHECK] Hostname..."; hostname
+  echo "[CHECK] Versão PBS..."; proxmox-backup-manager version 2>/dev/null || echo "[WARN] versão PBS indisponível"
+  echo "[CHECK] Root filesystem..."; findmnt / || true
+  echo "[CHECK] Datastores PBS..."; proxmox-backup-manager datastore list || true
+  echo "[CHECK] Mounts relevantes..."; findmnt | grep -E '/mnt|datastore' || true
+  echo "[CHECK] Timezone..."; timedatectl | sed -n '1,6p' || true
+
+  echo -e "$LINE"
+  echo -e "${GREEN}[OK]${RESET} Estado visual completo!"
+  echo -e "$LINE"
+}
+
+show_menu() {
+  echo
+  echo -e "${CYAN}=== Dashboard / Ações rápidas ===${RESET}"
+  echo "1) Abrir wizard operacional (n5pro-post)"
+  echo "2) Abrir diagnóstico (n5pro-doctor)"
+  echo "3) Mostrar /etc/n5pro.conf"
+  echo "0) Sair"
+  echo
+}
+
+while true; do
+  show_status
+  show_menu
+  read -rp "Escolha: " opt
+
+  case "$opt" in
+    1) n5pro-post ;;
+    2) n5pro-doctor; read -rp "Enter para continuar..." _ ;;
+    3) [[ -f /etc/n5pro.conf ]] && cat /etc/n5pro.conf || echo "[WARN] /etc/n5pro.conf não encontrado"; read -rp "Enter para continuar..." _ ;;
+    0) echo "Bye 👋"; exit 0 ;;
+    *) echo -e "${YELLOW}Opção inválida${RESET}"; sleep 1 ;;
+  esac
+done
+EOF2
+
+cat >"$TMPDIR"/n5pro-post <<'EOF2'
+#!/usr/bin/env bash
+set -e
+
+RED="\033[38;5;196m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+CYAN="\033[38;5;14m"
+MAGENTA="\033[38;5;13m"
+BOLD="\033[1m"
+RESET="\033[0m"
+LINE="==========================================================="
+
+[[ -f /etc/n5pro.conf ]] || { echo -e "${RED}[ERRO]${RESET} /etc/n5pro.conf não encontrado"; exit 1; }
+source /etc/n5pro.conf
+
+DRY_RUN="false"
+
+warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; }
+
+run_remote() {
+  local script_name="$1"
+  if [[ -z "${N5PRO_REPO_BASE:-}" ]]; then
+    echo -e "${RED}[ERRO]${RESET} N5PRO_REPO_BASE não definido em /etc/n5pro.conf"
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "[DRY-RUN] bash <(curl -fsSL \"${N5PRO_REPO_BASE}/${script_name}\")"
+  else
+    bash <(curl -fsSL "${N5PRO_REPO_BASE}/${script_name}")
+  fi
+}
+
+while true; do
+  clear
+  echo -e "$LINE"
+  echo -e "${MAGENTA}${BOLD} N5Pro Wizard - PBS${RESET}"
+  echo -e "$LINE"
+  echo "1) Alternar dry-run"
+  echo "2) Wizard datastore PBS"
+  echo "3) Manual: 04-PBServer_PBS-PostInstall.sh"
+  echo "4) Mostrar datastores PBS"
+  echo "5) Mostrar /etc/n5pro.conf"
+  echo "0) Sair"
+  echo
+  read -rp "Escolha: " opt
+
+  case "$opt" in
+    1) [[ "$DRY_RUN" == "true" ]] && DRY_RUN="false" || DRY_RUN="true" ;;
+    2) run_remote "04-PBServer_PBS-PostInstall.sh"; read -rp "Enter para continuar..." _ ;;
+    3) run_remote "04-PBServer_PBS-PostInstall.sh"; read -rp "Enter para continuar..." _ ;;
+    4) proxmox-backup-manager datastore list || true; read -rp "Enter para continuar..." _ ;;
+    5) cat /etc/n5pro.conf; read -rp "Enter para continuar..." _ ;;
+    0) exit 0 ;;
+    *) warn "Opção inválida"; sleep 1 ;;
+  esac
+done
+EOF2
+
+cat >"$TMPDIR"/n5pro-doctor <<'EOF2'
+#!/usr/bin/env bash
+set -e
+
+RED="\033[38;5;196m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+CYAN="\033[38;5;14m"
+MAGENTA="\033[38;5;13m"
+BOLD="\033[1m"
+RESET="\033[0m"
+LINE="==========================================================="
+
+OK_COUNT=0
+WARN_COUNT=0
+ERR_COUNT=0
+
+ok()   { echo -e "${GREEN}[OK]${RESET} $*"; OK_COUNT=$((OK_COUNT+1)); }
+warn() { echo -e "${YELLOW}[WARN]${RESET} $*"; WARN_COUNT=$((WARN_COUNT+1)); }
+err()  { echo -e "${RED}[ERRO]${RESET} $*"; ERR_COUNT=$((ERR_COUNT+1)); }
+info() { echo -e "${CYAN}[INFO]${RESET} $*"; }
+
+[[ -f /etc/n5pro.conf ]] && source /etc/n5pro.conf
+
+echo -e "$LINE"
+echo -e "${MAGENTA}${BOLD} N5Pro Doctor - PBS${RESET}"
+echo -e "$LINE"
+
+if [[ -f /etc/n5pro.conf ]]; then
+  ok "/etc/n5pro.conf encontrado."
+else
+  warn "/etc/n5pro.conf não encontrado."
+fi
+
+[[ -n "${N5PRO_REPO_BASE:-}" ]] && ok "N5PRO_REPO_BASE definido: ${N5PRO_REPO_BASE}" || warn "N5PRO_REPO_BASE não definido."
+TZ_NOW="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+[[ -n "$TZ_NOW" ]] && ok "Timezone: ${TZ_NOW}" || warn "Timezone não lido."
+
+echo -e "$LINE"
+echo -e "${MAGENTA}${BOLD} Verificações PBS${RESET}"
+echo -e "$LINE"
+
+DATASTORE_JSON="$(proxmox-backup-manager datastore list --output-format json 2>/dev/null || echo '[]')"
+
+if command -v jq >/dev/null 2>&1; then
+  DS_COUNT="$(echo "$DATASTORE_JSON" | jq 'length' 2>/dev/null || echo 0)"
+  if [[ "$DS_COUNT" -gt 0 ]]; then
+    ok "PBS devolveu pelo menos um datastore configurado."
+  else
+    warn "PBS não devolveu datastores configurados."
+  fi
+
+  if echo "$DATASTORE_JSON" | jq -e '.[] | select(.name=="usb-temp")' >/dev/null 2>&1; then
+    ok "Datastore 'usb-temp' existe."
+  else
+    warn "Datastore 'usb-temp' não existe."
+  fi
+
+  while IFS='|' read -r ds_name ds_path; do
+    [[ -n "$ds_name" ]] || continue
+    [[ -n "$ds_path" ]] || continue
+
+    if [[ -d "$ds_path" ]]; then
+      ok "Path de datastore existe: $ds_path"
+    else
+      warn "Path de datastore não existe: $ds_path"
+    fi
+
+    if findmnt "$ds_path" >/dev/null 2>&1; then
+      ok "Datastore montado diretamente: $ds_path"
+    else
+      parent_dir="$(dirname "$ds_path")"
+      if findmnt "$parent_dir" >/dev/null 2>&1; then
+        ok "Parent mount ativo para datastore: $parent_dir"
+      else
+        warn "Nem o datastore nem o parent parecem montados: $ds_path"
+      fi
+    fi
+  done < <(echo "$DATASTORE_JSON" | jq -r '.[] | "\(.name)|\(.path)"' 2>/dev/null)
+else
+  warn "jq não encontrado; análise detalhada do datastore limitada."
+fi
+
+if findmnt /mnt/datastore >/dev/null 2>&1; then
+  ok "/mnt/datastore está montado."
+else
+  warn "/mnt/datastore não está montado."
+fi
+
+[[ -d /mnt/datastore/usb-temp ]] && ok "Path /mnt/datastore/usb-temp existe." || warn "Path /mnt/datastore/usb-temp não existe."
+
+if [[ -n "${PVE_IP:-}" ]]; then
+  ping -c 1 -W 1 "${PVE_IP}" >/dev/null 2>&1 && ok "PVE responde por rede (${PVE_IP})." || warn "PVE não responde por ping (${PVE_IP})."
+else
+  warn "PVE_IP não definido em /etc/n5pro.conf."
+fi
+
+systemctl is-active proxmox-backup >/dev/null 2>&1 && ok "Serviço proxmox-backup ativo." || warn "Serviço proxmox-backup não está ativo."
+
+echo -e "$LINE"
+echo -e "${MAGENTA}${BOLD} Resumo${RESET}"
+echo -e "$LINE"
+echo -e "${GREEN}OKs   : ${OK_COUNT}${RESET}"
+echo -e "${YELLOW}Avisos: ${WARN_COUNT}${RESET}"
+echo -e "${RED}Erros : ${ERR_COUNT}${RESET}"
+echo -e "$LINE"
+
+if [[ "$ERR_COUNT" -gt 0 ]]; then
+  err "Há problemas a corrigir."
+elif [[ "$WARN_COUNT" -gt 0 ]]; then
+  warn "Está funcional, mas ainda há pontos a rever."
+else
+  ok "Tudo parece consistente."
+fi
+EOF2
+
+chmod +x "$TMPDIR"/n5pro "$TMPDIR"/n5pro-post "$TMPDIR"/n5pro-doctor
+
+info "Copiar ficheiros para a PBS..."
+scp "$TMPDIR"/n5pro "$TMPDIR"/n5pro-post "$TMPDIR"/n5pro-doctor root@"$PBS_TARGET_IP":/tmp/
+scp "$TMPDIR"/n5pro.conf root@"$PBS_TARGET_IP":/tmp/
+
+info "Instalar na PBS..."
+ssh root@"$PBS_TARGET_IP" '
+set -e
+if ! command -v jq >/dev/null 2>&1; then
+  apt-get update >/dev/null 2>&1 || true
+  apt-get install -y jq >/dev/null 2>&1 || true
+fi
+install -m 755 /tmp/n5pro /usr/local/bin/n5pro
+install -m 755 /tmp/n5pro-post /usr/local/bin/n5pro-post
+install -m 755 /tmp/n5pro-doctor /usr/local/bin/n5pro-doctor
+install -m 600 /tmp/n5pro.conf /etc/n5pro.conf
+rm -f /tmp/n5pro /tmp/n5pro-post /tmp/n5pro-doctor /tmp/n5pro.conf
+echo "[OK] n5pro, n5pro-post, n5pro-doctor e /etc/n5pro.conf instalados."
+'
+
+ok "Bootstrap PBS concluído."
+echo -e "$LINE"

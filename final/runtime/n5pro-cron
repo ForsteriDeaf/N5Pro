@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -e
+
+# shellcheck disable=SC1091
+source /usr/local/lib/n5pro/common.sh
+
+CRON_TAG_DOCTOR="# N5PRO_DOCTOR"
+CRON_TAG_BACKUP="# N5PRO_BACKUP"
+
+show_usage() {
+  cat <<USAGE
+Uso:
+  n5pro-cron list
+  n5pro-cron install-doctor
+  n5pro-cron install-backup
+  n5pro-cron remove-doctor
+  n5pro-cron remove-backup
+  n5pro-cron remove-all
+
+Jobs:
+  doctor -> n5pro-doctor --dry-run às 06:15
+  backup -> n5pro-backup às 03:00
+USAGE
+}
+
+get_crontab() {
+  crontab -l 2>/dev/null || true
+}
+
+install_doctor() {
+  local current newjob
+  current="$(get_crontab | grep -vF "$CRON_TAG_DOCTOR" || true)"
+  newjob="15 6 * * * /usr/local/bin/n5pro-doctor --dry-run >> /var/log/n5pro.log 2>&1 ${CRON_TAG_DOCTOR}"
+  printf "%s\n%s\n" "$current" "$newjob" | sed '/^$/N;/^\n$/D' | crontab -
+  ok "Cron do doctor instalado."
+}
+
+install_backup() {
+  local current newjob
+  current="$(get_crontab | grep -vF "$CRON_TAG_BACKUP" || true)"
+  newjob="0 3 * * * /usr/local/bin/n5pro-backup >> /var/log/n5pro.log 2>&1 ${CRON_TAG_BACKUP}"
+  printf "%s\n%s\n" "$current" "$newjob" | sed '/^$/N;/^\n$/D' | crontab -
+  ok "Cron do backup instalado."
+}
+
+remove_doctor() {
+  get_crontab | grep -vF "$CRON_TAG_DOCTOR" | crontab -
+  ok "Cron do doctor removido."
+}
+
+remove_backup() {
+  get_crontab | grep -vF "$CRON_TAG_BACKUP" | crontab -
+  ok "Cron do backup removido."
+}
+
+remove_all() {
+  get_crontab | grep -vF "$CRON_TAG_DOCTOR" | grep -vF "$CRON_TAG_BACKUP" | crontab -
+  ok "Todos os cron jobs N5Pro removidos."
+}
+
+cmd="${1:-list}"
+
+case "$cmd" in
+  list)
+    print_header "N5Pro Cron - Jobs atuais"
+    get_crontab
+    ;;
+  install-doctor)
+    install_doctor
+    ;;
+  install-backup)
+    install_backup
+    ;;
+  remove-doctor)
+    remove_doctor
+    ;;
+  remove-backup)
+    remove_backup
+    ;;
+  remove-all)
+    remove_all
+    ;;
+  -h|--help|help)
+    show_usage
+    ;;
+  *)
+    warn "Comando desconhecido: $cmd"
+    show_usage
+    exit 1
+    ;;
+esac

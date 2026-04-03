@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -e
+
+BACKUP_BASE="/root/n5pro-backups"
+PVE_DIR="$BACKUP_BASE/pve"
+PBS_DIR="$BACKUP_BASE/pbs"
+DATE="$(date +%Y%m%d-%H%M%S)"
+PVE_FILE="$PVE_DIR/n5pro-backup-pve-$DATE.tar.gz"
+PBS_FILE="$PBS_DIR/n5pro-backup-pbs-$DATE.tar.gz"
+KEEP_COUNT=10
+
+RED="\033[38;5;196m"
+GREEN="\033[38;5;10m"
+YELLOW="\033[38;5;11m"
+CYAN="\033[38;5;14m"
+MAGENTA="\033[38;5;13m"
+BOLD="\033[1m"
+RESET="\033[0m"
+LINE="==========================================================="
+
+ok(){ echo -e "${GREEN}[OK]${RESET} $*"; }
+warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; }
+err(){ echo -e "${RED}[ERRO]${RESET} $*"; exit 1; }
+info(){ echo -e "${CYAN}[INFO]${RESET} $*"; }
+
+cleanup_old_backups() {
+  local dir="$1"
+  local pattern="$2"
+
+  mapfile -t files < <(ls -1t "$dir"/$pattern 2>/dev/null || true)
+  if [[ ${#files[@]} -le $KEEP_COUNT ]]; then
+    return 0
+  fi
+
+  for f in "${files[@]:$KEEP_COUNT}"; do
+    rm -f "$f"
+    info "Backup antigo removido: $(basename "$f")"
+  done
+}
+
+echo -e "$LINE"
+echo -e "${MAGENTA}${BOLD} N5Pro Backup v3${RESET}"
+echo -e "$LINE"
+
+mkdir -p "$PVE_DIR" "$PBS_DIR"
+
+if [[ ! -f /etc/n5pro.conf ]]; then
+  err "/etc/n5pro.conf não encontrado no PVE."
+fi
+
+# shellcheck disable=SC1091
+source /etc/n5pro.conf
+
+info "Criar backup do PVE..."
+tar -czf "$PVE_FILE" \
+/root/N5Pro-Wizard \
+/usr/local/bin/n5pro \
+/usr/local/bin/n5pro-post \
+/usr/local/bin/n5pro-update \
+/usr/local/bin/n5pro-doctor \
+/usr/local/bin/n5pro-bootstrap-pbs \
+/usr/local/bin/n5pro-backup \
+/etc/n5pro.conf
+
+ln -sfn "$PVE_FILE" "$PVE_DIR/n5pro-backup-pve-latest.tar.gz"
+ok "Backup PVE criado: $PVE_FILE"
+
+if [[ -n "${PBS_IP:-}" ]]; then
+  info "Tentar backup remoto da PBS (${PBS_IP})..."
+  if ping -c 1 -W 1 "$PBS_IP" >/dev/null 2>&1; then
+    if ssh root@"$PBS_IP" 'bash -s' <<'EOSSH'
+set -e
+DATE="$(date +%Y%m%d-%H%M%S)"
+TMP_FILE="/root/n5pro-backup-pbs-$DATE.tar.gz"
+tar -czf "$TMP_FILE" \
+/usr/local/bin/n5pro \
+/usr/local/bin/n5pro-post \
+/usr/local/bin/n5pro-doctor \
+/etc/n5pro.conf
+echo "$TMP_FILE"
+EOSSH
+    then
+      PBS_REMOTE_FILE="$(ssh root@"$PBS_IP" 'ls -1t /root/n5pro-backup-pbs-*.tar.gz 2>/dev/null | head -n1' || true)"
+      if [[ -n "$PBS_REMOTE_FILE" ]]; then
+        scp root@"$PBS_IP":"$PBS_REMOTE_FILE" "$PBS_FILE"
+        ln -sfn "$PBS_FILE" "$PBS_DIR/n5pro-backup-pbs-latest.tar.gz"
+        ok "Backup PBS copiado para: $PBS_FILE"
+      else
+        warn "Backup remoto PBS foi criado, mas não consegui localizar o ficheiro."
+      fi
+    else
+      warn "Não foi possível executar backup remoto na PBS."
+    fi
+  else
+    warn "PBS não responde por rede; backup PBS ignorado."
+  fi
+else
+  warn "PBS_IP não definido; backup PBS ignorado."
+fi
+
+info "Aplicar política de retenção (manter últimos ${KEEP_COUNT})..."
+cleanup_old_backups "$PVE_DIR" 'n5pro-backup-pve-*.tar.gz'
+cleanup_old_backups "$PBS_DIR" 'n5pro-backup-pbs-*.tar.gz'
+
+echo -e "$LINE"
+ok "Backup v3 concluído."
+info "Último backup PVE: $PVE_DIR/n5pro-backup-pve-latest.tar.gz"
+info "Último backup PBS: $PBS_DIR/n5pro-backup-pbs-latest.tar.gz"
+echo -e "$LINE"
+
+echo
+echo "PVE backups:"
+ls -lh "$PVE_DIR" 2>/dev/null || true
+echo
+echo "PBS backups:"
+ls -lh "$PBS_DIR" 2>/dev/null || true

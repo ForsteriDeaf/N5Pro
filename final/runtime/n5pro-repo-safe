@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -e
+
+REPO_DIR="/root/N5Pro-Wizard"
+FINAL_DIR="$REPO_DIR/final"
+
+usage() {
+  cat <<USAGE
+Uso:
+  n5pro-repo-safe status
+  n5pro-repo-safe restore
+  n5pro-repo-safe clean-root-sh
+  n5pro-repo-safe list-root-sh
+  n5pro-repo-safe check-final
+
+Comandos:
+  status         Mostra estado do repo
+  restore        Restaura repo para origin/main
+  clean-root-sh  Remove apenas *.sh da raiz do repo
+  list-root-sh   Lista apenas *.sh da raiz do repo
+  check-final    Lista conteúdo crítico de final/
+USAGE
+}
+
+confirm() {
+  read -rp "$1 [y/N]: " a
+  [[ "${a,,}" =~ ^y(es)?$ ]]
+}
+
+case "${1:-}" in
+  status)
+    cd "$REPO_DIR"
+    git status
+    ;;
+
+  restore)
+    cd "$REPO_DIR"
+    confirm "Isto vai repor o repo para origin/main. Continuar?" || exit 0
+    git fetch origin
+    git reset --hard origin/main
+    echo "[OK] Repo restaurado para origin/main."
+    ;;
+
+  clean-root-sh)
+    cd "$REPO_DIR"
+    echo "[INFO] Scripts na raiz:"
+    find "$REPO_DIR" -maxdepth 1 -type f -name "*.sh" -printf "%f\n"
+    confirm "Remover apenas *.sh da raiz do repo?" || exit 0
+    find "$REPO_DIR" -maxdepth 1 -type f -name "*.sh" -delete
+    echo "[OK] Scripts .sh da raiz removidos."
+    ;;
+
+  list-root-sh)
+    cd "$REPO_DIR"
+    find "$REPO_DIR" -maxdepth 1 -type f -name "*.sh" -printf "%f\n"
+    ;;
+
+  check-final)
+    cd "$FINAL_DIR"
+    ls -l
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac

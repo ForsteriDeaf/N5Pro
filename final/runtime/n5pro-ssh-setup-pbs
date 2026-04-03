@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -e
+
+# shellcheck disable=SC1091
+source /usr/local/lib/n5pro/common.sh
+
+acquire_lock
+load_n5pro_config
+print_header "N5Pro SSH Setup PBS"
+
+need_cmd ssh
+need_cmd ssh-copy-id
+
+PBS_TARGET_IP="${1:-${PBS_IP:-}}"
+[[ -n "$PBS_TARGET_IP" ]] || die "PBS_IP não definido."
+
+KEY_FILE="/root/.ssh/id_ed25519"
+
+if [[ ! -f "$KEY_FILE" ]]; then
+  info "Gerar chave SSH ed25519..."
+  ssh-keygen -t ed25519 -N "" -f "$KEY_FILE"
+  ok "Chave SSH criada."
+else
+  ok "Chave SSH já existe: $KEY_FILE"
+fi
+
+info "Instalar chave pública na PBS (${PBS_TARGET_IP})..."
+ssh-copy-id -i "${KEY_FILE}.pub" "root@${PBS_TARGET_IP}"
+
+info "Testar login sem password..."
+ssh -o BatchMode=yes -o ConnectTimeout=5 "root@${PBS_TARGET_IP}" 'echo "[OK] SSH key auth funcional."' || die "Falha no teste SSH sem password."
+
+ok "SSH PVE -> PBS configurado com sucesso."

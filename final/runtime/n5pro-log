@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -e
+
+# shellcheck disable=SC1091
+source /usr/local/lib/n5pro/common.sh
+
+LOG_FILE="${N5PRO_LOG_FILE:-/var/log/n5pro.log}"
+
+show_usage() {
+  cat <<USAGE
+Uso:
+  n5pro-log
+  n5pro-log tail
+  n5pro-log errors
+  n5pro-log follow
+  n5pro-log clear
+  n5pro-log export
+
+Comandos:
+  tail    Mostrar últimas 50 linhas
+  errors  Mostrar apenas WARN/ERRO
+  follow  Seguir log em tempo real
+  clear   Limpar log
+  export  Exportar cópia para /root/n5pro-log-YYYYmmdd-HHMMSS.log
+USAGE
+}
+
+ensure_log_exists() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+  touch "$LOG_FILE"
+}
+
+cmd="${1:-tail}"
+ensure_log_exists
+
+case "$cmd" in
+  tail)
+    print_header "N5Pro Log - últimas 50 linhas"
+    tail -n 50 "$LOG_FILE"
+    ;;
+  errors)
+    print_header "N5Pro Log - WARN/ERRO"
+    grep -E '\[WARN\]|\[ERRO\]' "$LOG_FILE" || true
+    ;;
+  follow)
+    print_header "N5Pro Log - follow"
+    tail -f "$LOG_FILE"
+    ;;
+  clear)
+    print_header "N5Pro Log - limpar"
+    if confirm "Queres limpar o log"; then
+      : > "$LOG_FILE"
+      ok "Log limpo."
+    else
+      warn "Operação cancelada."
+    fi
+    ;;
+  export)
+    print_header "N5Pro Log - export"
+    OUT="/root/n5pro-log-$(date +%Y%m%d-%H%M%S).log"
+    cp -a "$LOG_FILE" "$OUT"
+    ok "Log exportado para: $OUT"
+    ;;
+  -h|--help|help)
+    show_usage
+    ;;
+  *)
+    warn "Comando desconhecido: $cmd"
+    show_usage
+    exit 1
+    ;;
+esac
