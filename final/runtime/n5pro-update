@@ -4,13 +4,8 @@ set -e
 # shellcheck disable=SC1091
 source /usr/local/lib/n5pro/common.sh
 
-acquire_lock() {
-  LOCK_FILE="/tmp/n5pro-update.lock"
-  exec 9>"$LOCK_FILE"
-  flock -n 9 || die "Outro n5pro-update já está em execução."
-}
-
-acquire_lock
+acquire_lock "n5pro-update.lock"
+load_n5pro_config
 
 REPO_ROOT="${REPO_ROOT:-/opt/n5pro}"
 FINAL_DIR="${REPO_ROOT}/final"
@@ -23,10 +18,37 @@ EXAMPLES_DIR="${FINAL_DIR}/examples"
 
 BACKUP_ROOT="/root/.n5pro-update-backups"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
+BACKUP_DIR=""
+BACKUP_CREATED="false"
 
 INSTALL_MODE="false"
-[[ "${1:-}" == "--install" ]] && INSTALL_MODE="true"
+CHECK_MODE="false"
+SELF_CHECK_MODE="false"
+DOCTOR_MODE="false"
+
+SYNC_STATUS="NOT_RUN"
+STRUCTURE_STATUS="PENDING"
+SYNTAX_STATUS="PENDING"
+BACKUP_STATUS="NOT_CREATED"
+INSTALL_STATUS="NOT_APPLIED"
+RETENTION_STATUS="NOT_RUN"
+
+REPO_STATE="UNKNOWN"
+REPO_CHANGED_COUNT="0"
+
+SELF_CHECK_STATUS="NOT_RUN"
+SELF_CHECK_OK="0"
+SELF_CHECK_WARN="0"
+SELF_CHECK_FAIL="0"
+
+DOCTOR_STATUS="NOT_RUN"
+
+case "${1:-}" in
+  --install) INSTALL_MODE="true" ;;
+  --check) CHECK_MODE="true" ;;
+  --self-check) SELF_CHECK_MODE="true" ;;
+  --doctor) DOCTOR_MODE="true" ;;
+esac
 
 print_header "N5Pro Update"
 
@@ -36,14 +58,20 @@ print_header "N5Pro Update"
 [[ -d "$RUNTIME_DIR" ]] || die "Diretório runtime não encontrado em ${RUNTIME_DIR}"
 [[ -d "$LIB_DIR" ]] || die "Diretório lib não encontrado em ${LIB_DIR}"
 
-mkdir -p "$BACKUP_DIR"
 mkdir -p /usr/local/lib/n5pro
 mkdir -p /usr/local/bin
 
 backup_if_exists() {
   local f="$1"
   [[ -e "$f" ]] || return 0
-  mkdir -p "$BACKUP_DIR"
+
+  if [[ "$BACKUP_CREATED" != "true" ]]; then
+    BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
+    mkdir -p "$BACKUP_DIR"
+    BACKUP_CREATED="true"
+    BACKUP_STATUS="CREATED"
+  fi
+
   cp -a "$f" "$BACKUP_DIR"/
 }
 
@@ -75,13 +103,37 @@ validate_structure() {
     [[ -f "${RUNTIME_DIR}/${f}" ]] || warn "Runtime em falta: ${RUNTIME_DIR}/${f}"
   done
 
+  STRUCTURE_STATUS="OK"
   ok "Estrutura validada."
 }
 
 sync_git() {
   info "Sincronizar repo local..."
   cd "$REPO_ROOT"
-  git pull --rebase origin main || warn "Não foi possível sincronizar via git pull --rebase origin main."
+
+  local changed_files=""
+  changed_files="$(git status --porcelain 2>/dev/null || true)"
+
+  if [[ -n "$changed_files" ]]; then
+    REPO_STATE="DIRTY"
+    REPO_CHANGED_COUNT="$(printf '%s\n' "$changed_files" | sed '/^$/d' | wc -l)"
+    SYNC_STATUS="SKIPPED_LOCAL_CHANGES"
+    warn "Existem alterações locais no repo. Sync git ignorado para proteger trabalho em curso."
+    info "Ficheiros alterados localmente:"
+    git status --short || true
+    return 0
+  fi
+
+  REPO_STATE="CLEAN"
+  REPO_CHANGED_COUNT="0"
+
+  if git pull --rebase origin main; then
+    SYNC_STATUS="OK"
+    ok "Repo sincronizado com origin/main."
+  else
+    SYNC_STATUS="FAILED"
+    warn "Não foi possível sincronizar via git pull --rebase origin main."
+  fi
 }
 
 backup_current_state() {
@@ -106,29 +158,55 @@ backup_current_state() {
   ok "Backup criado."
 }
 
-fix_permissions_and_validate_syntax() {
-  info "Corrigir permissões e validar sintaxe bash..."
+prune_old_backups() {
+  [[ -d "$BACKUP_ROOT" ]] || { RETENTION_STATUS="NOT_NEEDED"; return 0; }
 
-  local sh_files=()
+  info "Aplicar retenção de backups (manter últimos 10)..."
+
+  mapfile -t old_backups < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)
+
+  local total="${#old_backups[@]}"
+  if [[ "$total" -le 10 ]]; then
+    RETENTION_STATUS="OK"
+    ok "Retenção OK: ${total} backup(s) presentes."
+    return 0
+  fi
+
+  local remove_count=$((total - 10))
+  local i
+  for ((i=0; i<remove_count; i++)); do
+    rm -rf "${old_backups[$i]}"
+    info "Backup removido: ${old_backups[$i]}"
+  done
+
+  RETENTION_STATUS="PRUNED"
+  ok "Retenção aplicada."
+}
+
+fix_permissions_and_validate_syntax() {
+  info "Validar sintaxe..."
+
+  local files=()
   while IFS= read -r -d '' f; do
-    sh_files+=("$f")
-  done < <(find "$FINAL_DIR" -type f \( -name "*.sh" -o -path "${RUNTIME_DIR}/*" \) -print0)
+    files+=("$f")
+  done < <(find "$FINAL_DIR" -type f -print0 | sort -z)
 
   local f
-  for f in "${sh_files[@]}"; do
-    chmod +x "$f" || true
+  for f in "${files[@]}"; do
+    if [[ "$f" == *.sh || "$f" == "${RUNTIME_DIR}/"* ]]; then
+      chmod +x "$f" || true
+      bash -n "$f"
+      ok "OK: $(basename "$f")"
+    elif [[ "$(basename "$f")" == "VERSION" || "$(basename "$f")" == "config.env.example" ]]; then
+      ok "OK: $(basename "$f")"
+    fi
   done
 
-  ok "Permissões corrigidas."
-
-  for f in "${sh_files[@]}"; do
-    bash -n "$f"
-    ok "Sintaxe OK: $(basename "$f")"
-  done
+  SYNTAX_STATUS="OK"
 }
 
 install_runtime() {
-  info "Instalar runtime local..."
+  info "Instalar runtime..."
 
   local runtime_files=(
     n5pro
@@ -142,36 +220,270 @@ install_runtime() {
     if [[ -f "${RUNTIME_DIR}/${f}" ]]; then
       cp -a "${RUNTIME_DIR}/${f}" "/usr/local/bin/${f}"
       chmod +x "/usr/local/bin/${f}"
-      ok "Instalado: /usr/local/bin/${f}"
+      ok "Instalado: ${f}"
     fi
   done
 
   cp -a "${LIB_DIR}/common.sh" /usr/local/lib/n5pro/common.sh
   chmod 644 /usr/local/lib/n5pro/common.sh
-  ok "Instalado: /usr/local/lib/n5pro/common.sh"
+  ok "common.sh instalado"
 
-  VERSION_FILE="$(detect_version_file)"
-  if [[ -n "$VERSION_FILE" ]]; then
-    cp -a "$VERSION_FILE" /usr/local/lib/n5pro/VERSION
+  local version_file
+  version_file="$(detect_version_file)"
+  if [[ -n "$version_file" ]]; then
+    cp -a "$version_file" /usr/local/lib/n5pro/VERSION
     ok "VERSION local atualizado."
   else
     warn "VERSION não encontrado no repo; versão local não foi atualizada."
+  fi
+
+  INSTALL_STATUS="APPLIED"
+}
+
+self_check_ok() {
+  SELF_CHECK_OK=$((SELF_CHECK_OK + 1))
+  ok "$1"
+}
+
+self_check_warn() {
+  info "$1"
+}
+
+self_check_fail() {
+  SELF_CHECK_FAIL=$((SELF_CHECK_FAIL + 1))
+  fail_line "$1"
+}
+
+run_self_check() {
+  info "Modo --self-check ativo."
+  SELF_CHECK_STATUS="RUNNING"
+
+  echo -e "$LINE"
+  echo "Self-check runtime"
+  echo -e "$LINE"
+
+  local runtime_required=(
+    n5pro
+    n5pro-post
+    n5pro-update
+    n5pro-doctor
+  )
+
+  local runtime_optional=(
+    n5pro-backup
+    n5pro-version
+    n5pro-bootstrap-pbs
+    n5pro-repo-safe
+    n5pro-heal
+    n5pro-log
+    n5pro-cron
+  )
+
+  local f repo_file local_file
+  for f in "${runtime_required[@]}"; do
+    repo_file="${RUNTIME_DIR}/${f}"
+    local_file="/usr/local/bin/${f}"
+
+    if [[ ! -f "$repo_file" ]]; then
+      self_check_fail "Repo não contém: ${repo_file}"
+      continue
+    fi
+
+    if [[ ! -f "$local_file" ]]; then
+      self_check_fail "Runtime local em falta: ${local_file}"
+      continue
+    fi
+
+    if cmp -s "$repo_file" "$local_file"; then
+      self_check_ok "OK runtime: ${f}"
+    else
+      self_check_fail "Divergência runtime: ${f}"
+    fi
+  done
+
+  for f in "${runtime_optional[@]}"; do
+    repo_file="${RUNTIME_DIR}/${f}"
+    local_file="/usr/local/bin/${f}"
+
+    if [[ ! -f "$repo_file" ]]; then
+      info "Opcional não existe no repo: ${f}"
+      continue
+    fi
+
+    if [[ ! -f "$local_file" ]]; then
+      info "Opcional não instalado: ${f}"
+      continue
+    fi
+
+    if cmp -s "$repo_file" "$local_file"; then
+      self_check_ok "OK runtime opcional: ${f}"
+    else
+      self_check_fail "Divergência runtime opcional: ${f}"
+    fi
+  done
+
+  if [[ -f "${LIB_DIR}/common.sh" && -f /usr/local/lib/n5pro/common.sh ]]; then
+    if cmp -s "${LIB_DIR}/common.sh" /usr/local/lib/n5pro/common.sh; then
+      self_check_ok "OK lib: common.sh"
+    else
+      self_check_fail "Divergência lib: common.sh"
+    fi
+  else
+    self_check_fail "common.sh em falta no repo ou no runtime local"
+  fi
+
+  local version_file
+  version_file="$(detect_version_file)"
+  if [[ -n "$version_file" && -f /usr/local/lib/n5pro/VERSION ]]; then
+    if cmp -s "$version_file" /usr/local/lib/n5pro/VERSION; then
+      self_check_ok "OK VERSION"
+    else
+      self_check_fail "Divergência VERSION"
+    fi
+  else
+    info "VERSION ausente no repo ou no runtime local"
+  fi
+
+  if [[ "$SELF_CHECK_FAIL" -gt 0 ]]; then
+    SELF_CHECK_STATUS="FAIL"
+  else
+    SELF_CHECK_STATUS="OK"
+  fi
+}
+
+run_doctor_checks() {
+  info "Modo --doctor ativo."
+  DOCTOR_STATUS="RUNNING"
+
+  run_self_check
+
+  echo -e "$LINE"
+  echo "System checks"
+  echo -e "$LINE"
+
+  if [[ -f /etc/n5pro.conf ]]; then
+    ok "Config presente: /etc/n5pro.conf"
+  else
+    warn "Config ausente: /etc/n5pro.conf"
+    DOCTOR_STATUS="WARN"
+  fi
+
+  if command -v n5pro >/dev/null 2>&1; then
+    ok "Binário no PATH: n5pro"
+  else
+    warn "Binário ausente no PATH: n5pro"
+    DOCTOR_STATUS="WARN"
+  fi
+
+  if command -v n5pro-update >/dev/null 2>&1; then
+    ok "Binário no PATH: n5pro-update"
+  else
+    warn "Binário ausente no PATH: n5pro-update"
+    DOCTOR_STATUS="WARN"
+  fi
+
+  if command -v pveversion >/dev/null 2>&1; then
+    info "PVE version: $(pveversion | head -n1)"
+  fi
+
+  info "Kernel: $(uname -r)"
+
+  local root_line mem_line
+  root_line="$(df -h / | awk 'NR==2 {print $3"/"$2" usado ("$5")"}')"
+  mem_line="$(free -h | awk '/^Mem:/ {print $3"/"$2" usada"}')"
+
+  [[ -n "$root_line" ]] && info "Disco root: ${root_line}"
+  [[ -n "$mem_line" ]] && info "RAM: ${mem_line}"
+
+  if [[ "$SELF_CHECK_STATUS" == "FAIL" ]]; then
+    DOCTOR_STATUS="FAIL"
+  elif [[ "$DOCTOR_STATUS" != "WARN" ]]; then
+    DOCTOR_STATUS="OK"
   fi
 }
 
 show_summary() {
   echo -e "$LINE"
+  echo -e "${MAGENTA}${BOLD} Resumo Update${RESET}"
+  echo -e "$LINE"
+
+  echo -e "${CYAN}Repo sync  :${RESET} ${SYNC_STATUS}"
+  echo -e "${CYAN}Repo local :${RESET} ${REPO_STATE}"
+  echo -e "${CYAN}Alterações :${RESET} ${REPO_CHANGED_COUNT}"
+  echo -e "${CYAN}Estrutura  :${RESET} ${STRUCTURE_STATUS}"
+  echo -e "${CYAN}Sintaxe    :${RESET} ${SYNTAX_STATUS}"
+  echo -e "${CYAN}Backup     :${RESET} ${BACKUP_STATUS}"
+  echo -e "${CYAN}Instalação :${RESET} ${INSTALL_STATUS}"
+  echo -e "${CYAN}Retenção   :${RESET} ${RETENTION_STATUS}"
+
+  if [[ "$BACKUP_CREATED" == "true" ]]; then
+    echo -e "${CYAN}Path backup:${RESET} ${BACKUP_DIR}"
+  fi
+
+  echo -e "$LINE"
+
+  if [[ "$SELF_CHECK_MODE" == "true" || "$DOCTOR_MODE" == "true" ]]; then
+    echo "Self-check : ${SELF_CHECK_STATUS}"
+    echo "SC ok      : ${SELF_CHECK_OK}"
+    echo "SC avisos  : ${SELF_CHECK_WARN}"
+    echo "SC falhas  : ${SELF_CHECK_FAIL}"
+  fi
+
+  if [[ "$DOCTOR_MODE" == "true" ]]; then
+    echo "Doctor     : ${DOCTOR_STATUS}"
+  fi
+
   ok "Atualização concluída com sucesso."
-  info "Backup guardado em: ${BACKUP_DIR}"
-  if [[ "$INSTALL_MODE" == "true" ]]; then
+
+  if [[ "$CHECK_MODE" == "true" ]]; then
+    info "Modo --check: sem sync git, sem backup adicional, sem instalação."
+  elif [[ "$SELF_CHECK_MODE" == "true" ]]; then
+    info "Modo --self-check: auditoria local do runtime concluída."
+  elif [[ "$DOCTOR_MODE" == "true" ]]; then
+    info "Modo --doctor: diagnóstico completo concluído."
+  elif [[ "$INSTALL_MODE" == "true" ]]; then
     ok "Modo --install aplicado."
   else
     warn "Para reinstalar também os binários locais, usa: n5pro-update --install"
   fi
+
   echo -e "$LINE"
 }
 
 validate_structure
+
+if [[ "$CHECK_MODE" == "true" ]]; then
+  SYNC_STATUS="SKIPPED_CHECK_MODE"
+  REPO_STATE="CHECK_ONLY"
+  REPO_CHANGED_COUNT="0"
+  info "Modo --check ativo."
+  fix_permissions_and_validate_syntax
+  show_summary
+  exit 0
+fi
+
+if [[ "$SELF_CHECK_MODE" == "true" ]]; then
+  SYNC_STATUS="SKIPPED_SELF_CHECK"
+  SYNTAX_STATUS="SKIPPED_SELF_CHECK"
+  BACKUP_STATUS="NOT_CREATED"
+  INSTALL_STATUS="NOT_APPLIED"
+  RETENTION_STATUS="NOT_RUN"
+  run_self_check
+  show_summary
+  exit 0
+fi
+
+if [[ "$DOCTOR_MODE" == "true" ]]; then
+  SYNC_STATUS="SKIPPED_DOCTOR"
+  SYNTAX_STATUS="SKIPPED_DOCTOR"
+  BACKUP_STATUS="NOT_CREATED"
+  INSTALL_STATUS="NOT_APPLIED"
+  RETENTION_STATUS="NOT_RUN"
+  run_doctor_checks
+  show_summary
+  exit 0
+fi
+
 sync_git
 backup_current_state
 fix_permissions_and_validate_syntax
@@ -180,4 +492,5 @@ if [[ "$INSTALL_MODE" == "true" ]]; then
   install_runtime
 fi
 
+prune_old_backups
 show_summary
