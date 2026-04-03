@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-REPO_DIR="/root/N5Pro-Wizard"
+REPO_DIR="/opt/n5pro"
 FINAL_DIR="$REPO_DIR/final"
 
 usage() {

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+# shellcheck disable=SC1091
+source /usr/local/lib/n5pro/common.sh
+load_n5pro_config
+
 BACKUP_BASE="/root/n5pro-backups"
 PVE_DIR="$BACKUP_BASE/pve"
 PBS_DIR="$BACKUP_BASE/pbs"
@@ -8,20 +12,6 @@ DATE="$(date +%Y%m%d-%H%M%S)"
 PVE_FILE="$PVE_DIR/n5pro-backup-pve-$DATE.tar.gz"
 PBS_FILE="$PBS_DIR/n5pro-backup-pbs-$DATE.tar.gz"
 KEEP_COUNT=10
-
-RED="\033[38;5;196m"
-GREEN="\033[38;5;10m"
-YELLOW="\033[38;5;11m"
-CYAN="\033[38;5;14m"
-MAGENTA="\033[38;5;13m"
-BOLD="\033[1m"
-RESET="\033[0m"
-LINE="==========================================================="
-
-ok(){ echo -e "${GREEN}[OK]${RESET} $*"; }
-warn(){ echo -e "${YELLOW}[WARN]${RESET} $*"; }
-err(){ echo -e "${RED}[ERRO]${RESET} $*"; exit 1; }
-info(){ echo -e "${CYAN}[INFO]${RESET} $*"; }
 
 cleanup_old_backups() {
   local dir="$1"
@@ -38,14 +28,12 @@ cleanup_old_backups() {
   done
 }
 
-echo -e "$LINE"
-echo -e "${MAGENTA}${BOLD} N5Pro Backup v3${RESET}"
-echo -e "$LINE"
+print_header "N5Pro Backup"
 
 mkdir -p "$PVE_DIR" "$PBS_DIR"
 
 if [[ ! -f /etc/n5pro.conf ]]; then
-  err "/etc/n5pro.conf não encontrado no PVE."
+  die "/etc/n5pro.conf não encontrado no PVE."
 fi
 
 # shellcheck disable=SC1091
@@ -53,14 +41,21 @@ source /etc/n5pro.conf
 
 info "Criar backup do PVE..."
 tar -czf "$PVE_FILE" \
-/root/N5Pro-Wizard \
-/usr/local/bin/n5pro \
-/usr/local/bin/n5pro-post \
-/usr/local/bin/n5pro-update \
-/usr/local/bin/n5pro-doctor \
-/usr/local/bin/n5pro-bootstrap-pbs \
-/usr/local/bin/n5pro-backup \
-/etc/n5pro.conf
+  /opt/n5pro \
+  /usr/local/bin/n5pro \
+  /usr/local/bin/n5pro-post \
+  /usr/local/bin/n5pro-update \
+  /usr/local/bin/n5pro-doctor \
+  /usr/local/bin/n5pro-bootstrap-pbs \
+  /usr/local/bin/n5pro-backup \
+  /usr/local/bin/n5pro-heal \
+  /usr/local/bin/n5pro-log \
+  /usr/local/bin/n5pro-cron \
+  /usr/local/bin/n5pro-version \
+  /usr/local/bin/n5pro-repo-safe \
+  /usr/local/bin/n5pro-ssh-setup-pbs \
+  /usr/local/lib/n5pro \
+  /etc/n5pro.conf
 
 ln -sfn "$PVE_FILE" "$PVE_DIR/n5pro-backup-pve-latest.tar.gz"
 ok "Backup PVE criado: $PVE_FILE"
@@ -73,10 +68,11 @@ set -e
 DATE="$(date +%Y%m%d-%H%M%S)"
 TMP_FILE="/root/n5pro-backup-pbs-$DATE.tar.gz"
 tar -czf "$TMP_FILE" \
-/usr/local/bin/n5pro \
-/usr/local/bin/n5pro-post \
-/usr/local/bin/n5pro-doctor \
-/etc/n5pro.conf
+  /usr/local/bin/n5pro \
+  /usr/local/bin/n5pro-post \
+  /usr/local/bin/n5pro-doctor \
+  /usr/local/lib/n5pro \
+  /etc/n5pro.conf
 echo "$TMP_FILE"
 EOSSH
     then
@@ -103,7 +99,7 @@ cleanup_old_backups "$PVE_DIR" 'n5pro-backup-pve-*.tar.gz'
 cleanup_old_backups "$PBS_DIR" 'n5pro-backup-pbs-*.tar.gz'
 
 echo -e "$LINE"
-ok "Backup v3 concluído."
+ok "Backup concluído."
 info "Último backup PVE: $PVE_DIR/n5pro-backup-pve-latest.tar.gz"
 info "Último backup PBS: $PBS_DIR/n5pro-backup-pbs-latest.tar.gz"
 echo -e "$LINE"
