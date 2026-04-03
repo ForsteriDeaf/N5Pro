@@ -1,56 +1,71 @@
 # Installation
 
-## Requirements
+## Requisitos
 
-* Proxmox VE host
-* root access
-* internet access
-* `curl` available
+- Proxmox VE instalado
+- Acesso root
+- Ligação à internet
 
-## Option 1: bootstrap installer
+---
 
-```bash
-bash <(curl -s https://raw.githubusercontent.com/ForsteriDeaf/N5Pro-Wizard/main/final/bootstrap.sh)
-```
+## Clone do repositório
 
-This installs the main N5Pro commands into `/usr/local/bin` and creates `/etc/n5pro.conf` if it does not already exist.
+cd /opt
+git clone https://github.com/ForsteriDeaf/N5Pro.git n5pro
+cd /opt/n5pro
 
-## Option 2: repo-based install
+---
 
-```bash
-apt update
-apt install -y git curl
-cd /root
-git clone https://github.com/ForsteriDeaf/N5Pro-Wizard.git
-cd /opt/n5pro/final
-bash 01-PVE_Host-PostInstall.sh
+## Instalação base do runtime
+
+mkdir -p /usr/local/lib/n5pro
+
+cp final/lib/common.sh /usr/local/lib/n5pro/common.sh
+cp final/runtime/n5pro-update /usr/local/bin/n5pro-update
+
+chmod 644 /usr/local/lib/n5pro/common.sh
+chmod +x /usr/local/bin/n5pro-update
+
+---
+
+## Instalar sistema completo
+
 n5pro-update --install
-```
 
-## Validate installation
+---
 
-```bash
+## Validação
+
+n5pro-update --check
+n5pro-update --self-check
+n5pro-update --doctor
+
+---
+
+## Primeira execução
+
 n5pro
-n5pro-version check
-n5pro-doctor
-```
 
-## PBS bootstrap
+---
 
-From PVE:
+## Problemas comuns
 
-```bash
-n5pro-bootstrap-pbs
-```
+### common.sh não encontrado
 
-If needed, configure SSH first:
+cp final/lib/common.sh /usr/local/lib/n5pro/common.sh
 
-```bash
-n5pro-ssh-setup-pbs
-```
+### n5pro-update não existe
 
-## Notes
+cp final/runtime/n5pro-update /usr/local/bin/
+chmod +x /usr/local/bin/n5pro-update
 
-* The main runtime config is `/etc/n5pro.conf`
-* The repo update source is controlled by `N5PRO_REPO_BASE`
-* Use `n5pro-backup` before major changes
+---
+
+## Notas
+
+Runtime instalado em:
+/usr/local/bin
+/usr/local/lib/n5pro
+
+Repositório em:
+/opt/n5pro
