@@ -17,7 +17,7 @@ Estrutura final pensada para:
 - `03-Unraid-NAS_PVE-CreateVM.sh`
 
 ### PBS
-- `04-PBServer_PBS-PostInstall.sh`
+- `pbs/06-PBS-PostInstall.sh`
 
 ### PVE
 - `05-PVE_PBS-AddStorage.sh`

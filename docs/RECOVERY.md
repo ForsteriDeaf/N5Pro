@@ -21,7 +21,7 @@ git clone https://github.com/ForsteriDeaf/N5Pro-Wizard.git
 ## Bootstrap host
 
 ```bash
-cd /root/N5Pro-Wizard/final
+cd /opt/n5pro/final
 bash 01-PVE_Host-PostInstall.sh
 ```
 

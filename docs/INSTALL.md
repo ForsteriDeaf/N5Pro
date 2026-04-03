@@ -22,7 +22,7 @@ apt update
 apt install -y git curl
 cd /root
 git clone https://github.com/ForsteriDeaf/N5Pro-Wizard.git
-cd /root/N5Pro-Wizard/final
+cd /opt/n5pro/final
 bash 01-PVE_Host-PostInstall.sh
 n5pro-update --install
 ```
