@@ -1,72 +1,130 @@
 # Architecture
 
-## Design goals
+Visão geral da arquitetura do N5Pro.
 
-N5Pro is built around four principles:
+---
 
-* repeatability
-* visibility
-* safe automation
-* operational recovery
+## Estrutura base
 
-## Runtime model
+O projeto é dividido em três camadas principais:
 
-### On PVE
+1. Repositório (source of truth)
+2. Runtime (binários instalados)
+3. Sistema (Proxmox + VMs)
 
-Primary tools:
+---
 
-* `n5pro`
-* `n5pro-update`
-* `n5pro-doctor`
-* `n5pro-heal`
-* `n5pro-backup`
-* `n5pro-bootstrap-pbs`
+## 1. Repositório
 
-### On PBS
+Local:
+/opt/n5pro
 
-Primary tools:
+Contém:
+- scripts finais (final/)
+- documentação (docs/)
+- código legacy (legacy/)
 
-* `n5pro`
-* `n5pro-post`
-* `n5pro-doctor`
+---
 
-## Config
+## 2. Runtime
 
-Main config file:
+Instalado em:
+/usr/local/bin
+/usr/local/lib/n5pro
 
-```text
+Componentes:
+
+Core:
+- n5pro
+- n5pro-update
+- n5pro-doctor
+- n5pro-post
+
+Auxiliares:
+- n5pro-backup
+- n5pro-bootstrap-pbs
+- n5pro-cron
+- n5pro-heal
+- n5pro-log
+- n5pro-repo-safe
+- n5pro-ssh-setup-pbs
+- n5pro-version
+
+---
+
+## 3. Configuração
+
+Ficheiro:
 /etc/n5pro.conf
-```
 
-This file acts as the source of truth for:
+Define:
+- rede (IPs)
+- storage
+- paths
+- parâmetros de runtime
 
-* IP addressing
-* VMIDs
-* MAC addresses
-* storage names
-* repo base URL
-* datastore settings
+---
 
-## Update flow
+## 4. Fluxo de funcionamento
 
-1. update repo content
-2. validate syntax
-3. optionally reinstall local binaries
-4. update local version file
+1. Repo é atualizado (git)
+2. n5pro-update valida estrutura
+3. Backup automático é criado
+4. Runtime é instalado/atualizado
+5. Self-check valida integridade
+6. Doctor valida sistema
 
-## Recovery flow
+---
 
-1. reinstall host
-2. restore repo
-3. restore config
-4. run `n5pro-update --install`
-5. run `n5pro-doctor`
-6. bootstrap PBS if needed
+## 5. Filosofia
 
-## Safety controls
+- Repo = fonte única de verdade
+- Runtime = descartável e regenerável
+- Sistema = configurado via scripts
 
-* backups before major changes
-* dry-run doctor mode
-* explicit confirmation for risky actions
-* lock file usage for update/bootstrap actions
+---
 
+## 6. Segurança
+
+- backups automáticos antes de update
+- validação de sintaxe antes de instalar
+- proteção contra overwrite com repo sujo
+- comandos idempotentes
+
+---
+
+## 7. Recovery model
+
+Se falhar:
+
+1. garantir repo em /opt/n5pro
+2. reinstalar runtime
+3. validar com doctor
+
+---
+
+## 8. Separação de responsabilidades
+
+Repo:
+- código
+- scripts
+- docs
+
+Runtime:
+- execução
+- CLI
+- operações
+
+Sistema:
+- VMs
+- storage
+- rede
+
+---
+
+## 9. Estado atual
+
+- arquitetura estável
+- runtime modular
+- update system funcional
+- pronto para produção
