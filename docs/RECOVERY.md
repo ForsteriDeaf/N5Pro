@@ -1,70 +1,102 @@
 # Recovery
 
-## Reinstalling Proxmox VE
+Guia de recuperação do N5Pro em caso de falha, reinstalação ou perda de runtime.
 
-After reinstalling Proxmox VE, follow this sequence.
+---
 
-## Base preparation
+## Cenários comuns
 
-```bash
-apt update
-apt install -y git curl
-```
+- Perda de binários em /usr/local/bin
+- common.sh removido ou corrompido
+- Repo /opt/n5pro intacto mas runtime quebrado
+- Sistema reinstalado (Proxmox novo)
+- Erro após update
 
-## Clone repo
+---
 
-```bash
-cd /root
-git clone https://github.com/ForsteriDeaf/N5Pro-Wizard.git
-```
+## Recovery rápido (runtime)
 
-## Bootstrap host
+Se o repo ainda existe em /opt/n5pro:
 
-```bash
-cd /opt/n5pro/final
-bash 01-PVE_Host-PostInstall.sh
-```
+cd /opt/n5pro
 
-## Restore config
+cp final/lib/common.sh /usr/local/lib/n5pro/common.sh
+cp final/runtime/n5pro-update /usr/local/bin/n5pro-update
 
-If you have a backup, restore it. Otherwise recreate:
+chmod 644 /usr/local/lib/n5pro/common.sh
+chmod +x /usr/local/bin/n5pro-update
 
-```bash
-nano /etc/n5pro.conf
-```
-
-## Reinstall local binaries
-
-```bash
 n5pro-update --install
-```
 
-## Validate
+---
 
-```bash
-n5pro
-n5pro-doctor
-```
+## Validar recuperação
 
-## Restore PBS integration
+n5pro-update --self-check
+n5pro-update --doctor
 
-```bash
-n5pro-bootstrap-pbs
-```
+---
 
-## Reconfigure Git SSH if needed
+## Recovery completo (do zero)
 
-If the host was reinstalled, SSH keys may need to be recreated:
+Se o sistema foi reinstalado:
 
-```bash
-ssh-keygen -t ed25519 -C "root@pve"
-cat ~/.ssh/id_ed25519.pub
-```
+cd /opt
+git clone https://github.com/ForsteriDeaf/N5Pro.git n5pro
+cd /opt/n5pro
 
-Then add the public key to GitHub.
+mkdir -p /usr/local/lib/n5pro
 
-## Recommended final step
+cp final/lib/common.sh /usr/local/lib/n5pro/common.sh
+cp final/runtime/n5pro-update /usr/local/bin/n5pro-update
 
-```bash
-n5pro-backup
-```
+chmod 644 /usr/local/lib/n5pro/common.sh
+chmod +x /usr/local/bin/n5pro-update
+
+n5pro-update --install
+
+---
+
+## Recuperar configuração
+
+Se existir backup de /etc/n5pro.conf:
+
+cp backup/n5pro.conf /etc/n5pro.conf
+
+Caso contrário:
+executar novamente o setup via n5pro
+
+---
+
+## Diagnóstico
+
+n5pro-update --doctor
+
+---
+
+## Logs
+
+Ver logs do sistema:
+/var/log/
+/root/
+
+---
+
+## Notas importantes
+
+- /opt/n5pro é a fonte de verdade
+- runtime pode ser recriado a qualquer momento
+- backups são guardados em:
+  /root/.n5pro-update-backups
+
+---
+
+## Regra de ouro
+
+Se algo falhar:
+
+1. garantir repo OK
+2. reinstalar runtime
+3. correr doctor
+
+Nunca editar manualmente /usr/local/bin sem atualizar o repo
