@@ -1,47 +1,89 @@
-# N5pro Homelab Wizard - revisão minuciosa
+# Runtime
 
-Estrutura final pensada para:
-- gist/raw
-- github clonado
-- manutenção futura sem perder contexto
+O runtime N5Pro é o conjunto de ferramentas instaladas no sistema para operação diária.
 
-## Ordem principal
-1. `01-PVE_Host-PostInstall.sh`
-2. reboot
-3. `n5pro`
-4. `n5pro-post`
+---
 
-## Fluxo lógico
-### PVE
-- `02-PBServer_PVE-CreateVM.sh`
-- `03-Unraid-NAS_PVE-CreateVM.sh`
+## Localização
 
-### PBS
-- `pbs/06-PBS-PostInstall.sh`
+/usr/local/bin        → comandos
+/usr/local/lib/n5pro  → common.sh + VERSION
+/etc/n5pro.conf       → configuração
 
-### PVE
-- `05-PVE_PBS-AddStorage.sh`
-- `06-PVE_PBS-CreateBackupJob.sh`
+---
+
+## Runtime core
+
+n5pro           → dashboard principal
+n5pro-update    → sistema de update
+n5pro-doctor    → diagnóstico
+n5pro-post      → wizard operacional
+
+---
+
+## Runtime auxiliar
+
+n5pro-backup
+n5pro-bootstrap-pbs
+n5pro-cron
+n5pro-heal
+n5pro-log
+n5pro-repo-safe
+n5pro-ssh-setup-pbs
+n5pro-version
+
+---
+
+## Biblioteca
+
+common.sh
+
+Local:
+/usr/local/lib/n5pro/common.sh
+
+Funções:
+- logging
+- validações
+- helpers
+- locks
+- config loader
+
+---
+
+## Configuração
+
+Ficheiro:
+/etc/n5pro.conf
+
+Contém:
+- IPs
+- storage
+- paths
+- parâmetros de runtime
+
+---
+
+## Instalação do runtime
+
+n5pro-update --install
+
+---
+
+## Verificação
+
+n5pro-update --self-check
+
+---
+
+## Diagnóstico
+
+n5pro-update --doctor
+
+---
 
 ## Notas
-- `final/common.sh` e `final/lib/common.sh` são iguais por opção, para manter a estrutura híbrida.
-- o ficheiro real usado após o script 01 é `/etc/n5pro.conf`
-- `06` ficou fora do fluxo principal e foi movido para legado
-- o PBS usa disco externo direto; já não usa NFS do Unraid
 
-
-## Nota importante
-A base remota usada pelo `01` foi alinhada para a pasta `final/` do repositório GitHub:
-`https://raw.githubusercontent.com/ForsteriDeaf/N5Pro-Wizard1/main/final`
-
-
-## Atualização de ordem
-A ordem foi revista para refletir a arquitetura atual:
-`Proxmox -> PBS -> Unraid`
-
-O PBS já não depende do Unraid/NFS para funcionar.
-
-
-## Fusão auditada
-Esta versão funde a base segura com as melhorias de automação sem retirar o que já foi construído até agora.
-Inclui: PBS assistido, espera pelo PBS online, tentativa de injeção automática de n5pro-post/common.sh/config, datastore USB com menu, e wrapper 07->06 para compatibilidade.
+- runtime é idempotente
+- pode ser reinstalado sem risco
+- valida estrutura automaticamente
+- suporta tools opcionais
