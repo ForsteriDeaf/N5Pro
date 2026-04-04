@@ -26,7 +26,94 @@ print_header() {
 }
 
 require_root() {
-  [[ "$EUID" -eq 0 ]] || die "Corre este bootstrap como root."
+  [[ "${EUID}" -eq 0 ]] || die "Corre este bootstrap como root."
+}
+
+require_proxmox_host() {
+  command -v pveversion >/dev/null 2>&1 || die "Este bootstrap é para correr num host Proxmox."
+}
+
+backup_file() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+
+  local backup_dir="/root/.script-backups"
+  local rel="${f#/}"
+  local dst="${backup_dir}/${rel}.bak.$(date +%Y%m%d-%H%M%S)"
+
+  mkdir -p "$(dirname "$dst")"
+  cp -a "$f" "$dst"
+}
+
+disable_repo_file() {
+  local f="$1"
+  [[ -e "$f" ]] || return 0
+
+  if [[ -e "${f}.disabled" ]]; then
+    rm -f "$f"
+    info "Removido duplicado ativo: $f"
+  else
+    mv "$f" "${f}.disabled"
+    info "Desativado: $f"
+  fi
+}
+
+configure_proxmox_repos() {
+  info "Preparar repositórios Proxmox/Debian..."
+
+  mkdir -p /etc/apt/sources.list.d
+
+  disable_repo_file /etc/apt/sources.list.d/pve-enterprise.list
+  disable_repo_file /etc/apt/sources.list.d/pve-enterprise.sources
+  disable_repo_file /etc/apt/sources.list.d/ceph.list
+  disable_repo_file /etc/apt/sources.list.d/ceph.sources
+
+  rm -f /etc/apt/sources.list.d/pve-no-subscription.list
+  rm -f /etc/apt/sources.list.d/pve-no-subscription.sources
+
+  if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
+    backup_file /etc/apt/sources.list.d/debian.sources
+    cat >/etc/apt/sources.list.d/debian.sources <<'EOF'
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.debian.org/debian-security
+Suites: trixie-security
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+    : > /etc/apt/sources.list
+    info "debian.sources atualizado."
+  elif [[ -f /etc/apt/sources.list ]]; then
+    backup_file /etc/apt/sources.list
+    cat >/etc/apt/sources.list <<'EOF'
+deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+EOF
+    info "/etc/apt/sources.list atualizado."
+  else
+    cat >/etc/apt/sources.list <<'EOF'
+deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+EOF
+    info "/etc/apt/sources.list criado."
+  fi
+
+  cat >/etc/apt/sources.list.d/pve-no-subscription.sources <<'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+
+  ok "Repositórios preparados."
 }
 
 install_base_packages() {
@@ -107,6 +194,8 @@ show_next_steps() {
 main() {
   print_header "N5Pro Bootstrap"
   require_root
+  require_proxmox_host
+  configure_proxmox_repos
   install_base_packages
   clone_or_update_repo
   install_min_runtime
