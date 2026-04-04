@@ -53,6 +53,12 @@ pause() {
   read -rp "Enter para continuar..." _
 }
 
+confirm_run() {
+  local msg="$1"
+  read -rp "${msg} [y/N]: " ans
+  [[ "${ans,,}" =~ ^y(es)?$ ]]
+}
+
 run_script() {
   local script_path="$1"
   local local_script="${FINAL_DIR}/${script_path}"
@@ -71,6 +77,12 @@ run_script() {
     return 0
   fi
 
+  if [[ -z "${N5PRO_REPO_BASE:-}" ]]; then
+    echo "[ERRO] N5PRO_REPO_BASE não definido e script local não encontrado: ${script_path}"
+    exit 1
+  fi
+
+  echo "[WARN] Script local não encontrado, a usar remoto: ${script_path}"
   bash <(curl -fsSL "${N5PRO_REPO_BASE}/${script_path}")
 }
 
@@ -111,12 +123,6 @@ show_status() {
   pause
 }
 
-confirm_run() {
-  local msg="$1"
-  read -rp "${msg} [y/N]: " ans
-  [[ "${ans,,}" =~ ^y(es)?$ ]]
-}
-
 ensure_config_or_bootstrap() {
   if ! config_exists; then
     clear
@@ -126,6 +132,7 @@ ensure_config_or_bootstrap() {
     echo "Ainda não existe /etc/n5pro.conf."
     echo "É necessário executar primeiro o setup base do host."
     echo "$LINE"
+
     if confirm_run "Queres executar agora o setup base do host?"; then
       run_script "$SCRIPT_HOST_POSTINSTALL"
       echo
@@ -134,9 +141,11 @@ ensure_config_or_bootstrap() {
       echo " [INFO] Faz reboot se o script tiver ativado IOMMU."
       echo "$LINE"
     fi
+
     pause
     return 1
   fi
+
   return 0
 }
 
@@ -257,6 +266,16 @@ show_config() {
   pause
 }
 
+show_datastores() {
+  clear
+  echo "$LINE"
+  echo " PBS Datastores"
+  echo "$LINE"
+  proxmox-backup-manager datastore list || true
+  echo "$LINE"
+  pause
+}
+
 toggle_dry_run() {
   [[ "$DRY_RUN" == "true" ]] && DRY_RUN="false" || DRY_RUN="true"
 }
@@ -323,7 +342,7 @@ main_menu_pbs() {
 
     case "$opt" in
       1) configure_pbs_guest ;;
-      2) clear; echo "$LINE"; echo " PBS Datastores"; echo "$LINE"; proxmox-backup-manager datastore list || true; echo "$LINE"; pause ;;
+      2) show_datastores ;;
       3) show_config ;;
       4) toggle_dry_run ;;
       0) exit 0 ;;
