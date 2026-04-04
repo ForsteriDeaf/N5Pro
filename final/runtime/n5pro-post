@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-set -e
-source /usr/local/lib/n5pro/common.sh
-load_n5pro_config
+set -euo pipefail
 
+COMMON_SH="/usr/local/lib/n5pro/common.sh"
+CONFIG_FILE="/etc/n5pro.conf"
+REPO_ROOT="/opt/n5pro"
+FINAL_DIR="${REPO_ROOT}/final"
 
-[[ -f /etc/n5pro.conf ]] || { echo "[ERRO] /etc/n5pro.conf não encontrado"; exit 1; }
+[[ -f "$COMMON_SH" ]] || { echo "[ERRO] common.sh não encontrado em ${COMMON_SH}"; exit 1; }
 # shellcheck disable=SC1091
-source /etc/n5pro.conf
+source "$COMMON_SH"
 
 LINE="==========================================================="
-DRY_RUN="false"
+DRY_RUN="${DRY_RUN:-false}"
 
 SCRIPT_HOST_POSTINSTALL="host/01-PVE-Host-PostInstall.sh"
 SCRIPT_CREATE_PBS_VM="pve/02-PVE-CreatePBSVM.sh"
@@ -18,22 +20,22 @@ SCRIPT_ADD_PBS_STORAGE="pve/04-PVE-AddPBSStorage.sh"
 SCRIPT_CREATE_BACKUP_JOB="pve/05-PVE-CreatePBSBackupJob.sh"
 SCRIPT_PBS_POSTINSTALL="pbs/06-PBS-PostInstall.sh"
 
-repo_check() {
-  [[ -n "${N5PRO_REPO_BASE:-}" ]]
+DEFAULT_REPO_BASE="https://raw.githubusercontent.com/ForsteriDeaf/N5Pro/main/final"
+N5PRO_REPO_BASE="${N5PRO_REPO_BASE:-$DEFAULT_REPO_BASE}"
+
+require_root() {
+  [[ "${EUID}" -eq 0 ]] || { echo "[ERRO] Corre como root."; exit 1; }
 }
 
-run_remote() {
-  local script_path="$1"
+config_exists() {
+  [[ -f "$CONFIG_FILE" ]]
+}
 
-  repo_check || {
-    echo "[ERRO] N5PRO_REPO_BASE não definido corretamente em /etc/n5pro.conf"
-    exit 1
-  }
-
-  if [[ "$DRY_RUN" == "true" ]]; then
-    echo "[DRY-RUN] bash <(curl -fsSL \"${N5PRO_REPO_BASE}/${script_path}\")"
-  else
-    bash <(curl -fsSL "${N5PRO_REPO_BASE}/${script_path}")
+load_config_if_present() {
+  if config_exists; then
+    load_n5pro_config
+    # shellcheck disable=SC1091
+    source "$CONFIG_FILE"
   fi
 }
 
@@ -51,41 +53,126 @@ pause() {
   read -rp "Enter para continuar..." _
 }
 
+run_script() {
+  local script_path="$1"
+  local local_script="${FINAL_DIR}/${script_path}"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    if [[ -f "$local_script" ]]; then
+      echo "[DRY-RUN] bash \"$local_script\""
+    else
+      echo "[DRY-RUN] bash <(curl -fsSL \"${N5PRO_REPO_BASE}/${script_path}\")"
+    fi
+    return 0
+  fi
+
+  if [[ -f "$local_script" ]]; then
+    bash "$local_script"
+    return 0
+  fi
+
+  bash <(curl -fsSL "${N5PRO_REPO_BASE}/${script_path}")
+}
+
 show_header() {
   clear
   echo "$LINE"
-  echo " N5Pro Post PRO v1.0"
+  echo " N5Pro Wizard v2"
   echo "$LINE"
-  echo "Host      : $(hostname)"
-  echo "Modo      : $(detect_mode)"
-  echo "Repo base : ${N5PRO_REPO_BASE}"
-  echo "Dry-run   : ${DRY_RUN}"
+  echo "Host        : $(hostname)"
+  echo "Modo        : $(detect_mode)"
+  echo "Repo local  : ${FINAL_DIR}"
+  echo "Repo remoto : ${N5PRO_REPO_BASE}"
+  echo "Config      : $([[ -f "$CONFIG_FILE" ]] && echo "OK" || echo "EM FALTA")"
+  echo "Dry-run     : ${DRY_RUN}"
   echo "$LINE"
 }
 
 show_status() {
-  if command -v n5pro >/dev/null 2>&1; then
-    n5pro
-  else
-    echo "[WARN] n5pro não encontrado."
+  clear
+  echo "$LINE"
+  echo " Estado do host"
+  echo "$LINE"
+  echo "Host        : $(hostname)"
+  echo "Modo        : $(detect_mode)"
+  echo "Config      : $([[ -f "$CONFIG_FILE" ]] && echo "OK" || echo "EM FALTA")"
+  echo "Repo local  : $([[ -d "$FINAL_DIR" ]] && echo "OK" || echo "EM FALTA")"
+
+  if command -v pveversion >/dev/null 2>&1; then
+    echo "PVE         : $(pveversion | head -n1)"
+    if grep -Eiq 'iommu=pt|intel_iommu=on|amd_iommu=on' /proc/cmdline; then
+      echo "IOMMU       : OK"
+    else
+      echo "IOMMU       : EM FALTA"
+    fi
   fi
+
+  echo "$LINE"
   pause
 }
 
-wizard_pve_core() {
+confirm_run() {
+  local msg="$1"
+  read -rp "${msg} [y/N]: " ans
+  [[ "${ans,,}" =~ ^y(es)?$ ]]
+}
+
+ensure_config_or_bootstrap() {
+  if ! config_exists; then
+    clear
+    echo "$LINE"
+    echo " Configuração inicial em falta"
+    echo "$LINE"
+    echo "Ainda não existe /etc/n5pro.conf."
+    echo "É necessário executar primeiro o setup base do host."
+    echo "$LINE"
+    if confirm_run "Queres executar agora o setup base do host?"; then
+      run_script "$SCRIPT_HOST_POSTINSTALL"
+      echo
+      echo "$LINE"
+      echo " [INFO] Setup base concluído."
+      echo " [INFO] Faz reboot se o script tiver ativado IOMMU."
+      echo "$LINE"
+    fi
+    pause
+    return 1
+  fi
+  return 0
+}
+
+run_host_postinstall() {
   clear
   echo "$LINE"
-  echo " N5Pro Wizard - PVE / Core"
+  echo " Preparar host base"
   echo "$LINE"
-  echo "Este modo faz:"
-  echo " 1) Validar ISO PBS"
-  echo " 2) Criar PBS VM"
-  echo " 3) Criar Unraid VM"
+  echo "Este passo:"
+  echo " - cria /etc/n5pro.conf"
+  echo " - prepara host"
+  echo " - trata IOMMU"
+  echo " - cria storage base"
   echo "$LINE"
+
+  confirm_run "Queres continuar?" || return 0
+  run_script "$SCRIPT_HOST_POSTINSTALL"
+
+  echo
+  echo "$LINE"
+  echo " [INFO] Setup base concluído."
+  echo " [INFO] Reboot recomendado antes de continuar."
+  echo "$LINE"
+  pause
+}
+
+create_pbs_vm() {
+  clear
+  echo "$LINE"
+  echo " Criar PBS VM"
+  echo "$LINE"
+  ensure_config_or_bootstrap || return 0
 
   local iso_found=""
   if command -v pvesm >/dev/null 2>&1; then
-    iso_found="$(pvesm list local 2>/dev/null | awk 'NR>1 {print $1}' | grep -i 'proxmox-backup-server.*\.iso\|pbs.*\.iso' | head -n1 || true)"
+    iso_found="$(pvesm list local 2>/dev/null | awk 'NR>1 {print $1}' | grep -Ei 'proxmox-backup-server.*\.iso|pbs.*\.iso' | head -n1 || true)"
   fi
 
   if [[ -n "$iso_found" ]]; then
@@ -94,70 +181,79 @@ wizard_pve_core() {
     echo "[WARN] ISO PBS não encontrado em local:iso"
     echo "Coloca o ISO em: Datacenter -> pve -> local -> ISO Images"
     echo
-    read -rp "Continuar mesmo assim? [y/N]: " ans_iso
-    [[ "${ans_iso,,}" =~ ^y(es)?$ ]] || return 0
+    confirm_run "Continuar mesmo assim?" || return 0
   fi
 
   echo
-  read -rp "Queres continuar? [y/N]: " ans
-  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
-
-  run_remote "$SCRIPT_CREATE_PBS_VM"
-  run_remote "$SCRIPT_CREATE_UNRAID_VM"
-
-  echo
-  echo "$LINE"
-  echo " Próximos passos"
-  echo "$LINE"
-  echo " - Instalar/arrancar o Unraid"
-  echo " - Entrar na PBS e correr: n5pro-post"
-  echo "$LINE"
+  confirm_run "Criar PBS VM agora?" || return 0
+  run_script "$SCRIPT_CREATE_PBS_VM"
   pause
 }
 
-wizard_pve_finalize() {
+create_unraid_vm() {
   clear
   echo "$LINE"
-  echo " N5Pro Wizard - PVE / Finalize"
+  echo " Criar Unraid VM"
   echo "$LINE"
-  echo "Este modo faz:"
-  echo " 1) Adicionar storage PBS"
-  echo " 2) Criar backup jobs PBS"
-  echo "$LINE"
-  read -rp "Queres continuar? [y/N]: " ans
-  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
+  ensure_config_or_bootstrap || return 0
 
-  run_remote "$SCRIPT_ADD_PBS_STORAGE"
-  run_remote "$SCRIPT_CREATE_BACKUP_JOB"
+  if ! grep -Eiq 'iommu=pt|intel_iommu=on|amd_iommu=on' /proc/cmdline; then
+    echo "[WARN] IOMMU não parece ativa em /proc/cmdline."
+    echo "[INFO] Faz reboot se acabaste de correr o setup base."
+    echo
+    confirm_run "Continuar mesmo assim?" || return 0
+  fi
+
+  confirm_run "Criar Unraid VM agora?" || return 0
+  run_script "$SCRIPT_CREATE_UNRAID_VM"
   pause
 }
 
-wizard_pbs_core() {
+configure_pbs_guest() {
   clear
   echo "$LINE"
-  echo " N5Pro Wizard - PBS"
+  echo " Configurar PBS"
   echo "$LINE"
-  echo "Este modo faz:"
-  echo " 1) Preparar PBS"
+  echo "Este passo corre o post-install da PBS."
   echo "$LINE"
-  read -rp "Queres continuar? [y/N]: " ans
-  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
-
-  run_remote "$SCRIPT_PBS_POSTINSTALL"
+  confirm_run "Queres continuar?" || return 0
+  run_script "$SCRIPT_PBS_POSTINSTALL"
   pause
 }
 
-run_host_postinstall() {
+integrate_pbs_storage() {
   clear
   echo "$LINE"
-  echo " N5Pro Wizard - Host Base"
+  echo " Integrar PBS no Proxmox"
   echo "$LINE"
-  echo "Este modo faz o post-install base do host PVE."
-  echo "$LINE"
-  read -rp "Queres continuar? [y/N]: " ans
-  [[ "${ans,,}" =~ ^y(es)?$ ]] || return 0
+  ensure_config_or_bootstrap || return 0
+  confirm_run "Adicionar storage PBS ao Proxmox agora?" || return 0
+  run_script "$SCRIPT_ADD_PBS_STORAGE"
+  pause
+}
 
-  run_remote "$SCRIPT_HOST_POSTINSTALL"
+create_backup_jobs() {
+  clear
+  echo "$LINE"
+  echo " Criar backup jobs"
+  echo "$LINE"
+  ensure_config_or_bootstrap || return 0
+  confirm_run "Criar backup jobs PBS agora?" || return 0
+  run_script "$SCRIPT_CREATE_BACKUP_JOB"
+  pause
+}
+
+show_config() {
+  clear
+  echo "$LINE"
+  echo " /etc/n5pro.conf"
+  echo "$LINE"
+  if config_exists; then
+    cat "$CONFIG_FILE"
+  else
+    echo "[WARN] Config ainda não existe."
+  fi
+  echo "$LINE"
   pause
 }
 
@@ -165,58 +261,97 @@ toggle_dry_run() {
   [[ "$DRY_RUN" == "true" ]] && DRY_RUN="false" || DRY_RUN="true"
 }
 
-while true; do
-  MODE="$(detect_mode)"
-  show_header
+first_boot_menu_pve() {
+  while true; do
+    show_header
+    echo "1) Estado do host"
+    echo "2) Preparar host base"
+    echo "3) Alternar dry-run"
+    echo "0) Sair"
+    read -rp "Escolha: " opt
 
-  case "$MODE" in
+    case "$opt" in
+      1) show_status ;;
+      2) run_host_postinstall ;;
+      3) toggle_dry_run ;;
+      0) exit 0 ;;
+      *) echo "Opção inválida."; pause ;;
+    esac
+  done
+}
+
+main_menu_pve() {
+  while true; do
+    show_header
+    echo "1) Estado do host"
+    echo "2) Preparar host base"
+    echo "3) Criar PBS VM"
+    echo "4) Criar Unraid VM"
+    echo "5) Configurar PBS"
+    echo "6) Integrar PBS no Proxmox"
+    echo "7) Criar backup jobs"
+    echo "8) Mostrar /etc/n5pro.conf"
+    echo "9) Alternar dry-run"
+    echo "0) Sair"
+    read -rp "Escolha: " opt
+
+    case "$opt" in
+      1) show_status ;;
+      2) run_host_postinstall ;;
+      3) create_pbs_vm ;;
+      4) create_unraid_vm ;;
+      5) configure_pbs_guest ;;
+      6) integrate_pbs_storage ;;
+      7) create_backup_jobs ;;
+      8) show_config ;;
+      9) toggle_dry_run ;;
+      0) exit 0 ;;
+      *) echo "Opção inválida."; pause ;;
+    esac
+  done
+}
+
+main_menu_pbs() {
+  while true; do
+    show_header
+    echo "1) Configurar PBS"
+    echo "2) Mostrar datastores PBS"
+    echo "3) Mostrar /etc/n5pro.conf"
+    echo "4) Alternar dry-run"
+    echo "0) Sair"
+    read -rp "Escolha: " opt
+
+    case "$opt" in
+      1) configure_pbs_guest ;;
+      2) clear; echo "$LINE"; echo " PBS Datastores"; echo "$LINE"; proxmox-backup-manager datastore list || true; echo "$LINE"; pause ;;
+      3) show_config ;;
+      4) toggle_dry_run ;;
+      0) exit 0 ;;
+      *) echo "Opção inválida."; pause ;;
+    esac
+  done
+}
+
+main() {
+  require_root
+  load_config_if_present
+
+  case "$(detect_mode)" in
     PVE)
-      echo "1) Estado do host"
-      echo "2) Preparar host base (post-install)"
-      echo "3) Wizard: criar PBS VM + Unraid VM"
-      echo "4) Wizard: integrar PBS + criar jobs"
-      echo "5) Manual: criar PBS VM"
-      echo "6) Manual: criar Unraid VM"
-      echo "7) Manual: adicionar storage PBS"
-      echo "8) Manual: criar backup jobs PBS"
-      echo "9) Mostrar /etc/n5pro.conf"
-      echo "10) Alternar dry-run"
-      echo "0) Sair"
-      read -rp "Escolha: " opt
-
-      case "$opt" in
-        1) show_status ;;
-        2) run_host_postinstall ;;
-        3) wizard_pve_core ;;
-        4) wizard_pve_finalize ;;
-        5) run_remote "$SCRIPT_CREATE_PBS_VM"; pause ;;
-        6) run_remote "$SCRIPT_CREATE_UNRAID_VM"; pause ;;
-        7) run_remote "$SCRIPT_ADD_PBS_STORAGE"; pause ;;
-        8) run_remote "$SCRIPT_CREATE_BACKUP_JOB"; pause ;;
-        9) cat /etc/n5pro.conf; pause ;;
-        10) toggle_dry_run ;;
-        0) exit 0 ;;
-      esac
+      if config_exists; then
+        main_menu_pve
+      else
+        first_boot_menu_pve
+      fi
       ;;
     PBS)
-      echo "1) Alternar dry-run"
-      echo "2) Preparar PBS (post-install)"
-      echo "3) Mostrar datastores PBS"
-      echo "4) Mostrar /etc/n5pro.conf"
-      echo "0) Sair"
-      read -rp "Escolha: " opt
-
-      case "$opt" in
-        1) toggle_dry_run ;;
-        2) wizard_pbs_core ;;
-        3) proxmox-backup-manager datastore list || true; pause ;;
-        4) cat /etc/n5pro.conf; pause ;;
-        0) exit 0 ;;
-      esac
+      main_menu_pbs
       ;;
     *)
-      echo "Ambiente não reconhecido."
+      echo "[ERRO] Ambiente não reconhecido."
       exit 1
       ;;
   esac
-done
+}
+
+main "$@"
