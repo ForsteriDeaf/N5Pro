@@ -97,8 +97,8 @@ clone_or_update_repo() {
   fi
 }
 
-install_min_runtime() {
-  info "Instalar runtime mínimo..."
+install_runtime_symlinks() {
+  info "Criar symlinks do runtime..."
 
   [[ -f "$REPO_DIR/final/lib/common.sh" ]] || die "Falta $REPO_DIR/final/lib/common.sh"
   [[ -f "$REPO_DIR/final/runtime/n5pro-update" ]] || die "Falta $REPO_DIR/final/runtime/n5pro-update"
@@ -106,13 +106,36 @@ install_min_runtime() {
   mkdir -p /usr/local/lib/n5pro
   mkdir -p /usr/local/bin
 
-  cp "$REPO_DIR/final/lib/common.sh" /usr/local/lib/n5pro/common.sh
-  chmod 644 /usr/local/lib/n5pro/common.sh
+  # core runtime
+  for f in n5pro n5pro-post n5pro-update n5pro-doctor; do
+    if [[ -f "$REPO_DIR/final/runtime/$f" ]]; then
+      rm -f "/usr/local/bin/$f"
+      ln -s "$REPO_DIR/final/runtime/$f" "/usr/local/bin/$f"
+      chmod +x "$REPO_DIR/final/runtime/$f"
+      ok "Ligado: $f"
+    else
+      warn "Runtime core em falta no repo: $f"
+    fi
+  done
 
-  cp "$REPO_DIR/final/runtime/n5pro-update" /usr/local/bin/n5pro-update
-  chmod +x /usr/local/bin/n5pro-update
+  # common.sh
+  rm -f /usr/local/lib/n5pro/common.sh
+  ln -s "$REPO_DIR/final/lib/common.sh" /usr/local/lib/n5pro/common.sh
+  chmod 644 "$REPO_DIR/final/lib/common.sh"
+  ok "Ligado: common.sh"
 
-  ok "Runtime mínimo instalado."
+  # VERSION
+  if [[ -f "$REPO_DIR/final/runtime/VERSION" ]]; then
+    rm -f /usr/local/lib/n5pro/VERSION
+    ln -s "$REPO_DIR/final/runtime/VERSION" /usr/local/lib/n5pro/VERSION
+    ok "Ligado: VERSION (runtime)"
+  elif [[ -f "$REPO_DIR/VERSION" ]]; then
+    rm -f /usr/local/lib/n5pro/VERSION
+    ln -s "$REPO_DIR/VERSION" /usr/local/lib/n5pro/VERSION
+    ok "Ligado: VERSION (repo)"
+  else
+    warn "VERSION não encontrado no repo."
+  fi
 }
 
 run_full_install() {
@@ -134,6 +157,7 @@ show_next_steps() {
   echo
   echo "Próximos comandos úteis:"
   echo "  n5pro"
+  echo "  n5pro-post"
   echo "  n5pro-update --self-check"
   echo "  n5pro-update --doctor"
   echo -e "$LINE"
@@ -146,7 +170,7 @@ main() {
   prepare_repos
   install_base_packages
   clone_or_update_repo
-  install_min_runtime
+  install_runtime_symlinks
   run_full_install
   run_validation
   show_next_steps
