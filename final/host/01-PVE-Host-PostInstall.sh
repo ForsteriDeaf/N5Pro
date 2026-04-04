@@ -30,12 +30,13 @@ else
   require_cmds(){ local cmd; for cmd in "$@"; do command -v "$cmd" >/dev/null 2>&1 || die "Comando em falta: ${cmd}"; done; }
 fi
 
-print_header "N5Pro Host Post-Install PRO v1.0"
+print_header "N5Pro Host Post-Install PRO v1.1"
 
-[[ "$EUID" -eq 0 ]] || die "Corre este script como root."
+[[ "${EUID}" -eq 0 ]] || die "Corre este script como root."
 command -v pveversion >/dev/null 2>&1 || die "Isto não parece ser um host Proxmox."
-require_cmds lsblk sgdisk wipefs pvcreate vgcreate lvcreate findmnt apt pvesm grep sed awk curl
+require_cmds lsblk sgdisk wipefs pvcreate vgcreate lvcreate findmnt apt pvesm grep sed awk curl timedatectl
 
+REPO_ROOT="${REPO_ROOT:-/opt/n5pro}"
 N5PRO_REPO_BASE="${N5PRO_REPO_BASE:-https://raw.githubusercontent.com/ForsteriDeaf/N5Pro/main/final}"
 
 PVE_IP="${PVE_IP:-192.168.50.99}"
@@ -74,6 +75,8 @@ ENABLE_IOMMU="${ENABLE_IOMMU:-true}"
 REMOVE_LOCAL_LVM_DEFAULT="${REMOVE_LOCAL_LVM_DEFAULT:-false}"
 CREATE_NVME_CONTAINERS_DEFAULT="${CREATE_NVME_CONTAINERS_DEFAULT:-true}"
 
+REBOOT_AT_END="${REBOOT_AT_END:-ask}"
+
 disable_repo_file() {
   local f="$1"
   [[ -e "$f" ]] || return 0
@@ -107,62 +110,27 @@ detect_cpu_vendor() {
 install_common_local() {
   print_step "STEP 0" "Instalar common.sh local"
   mkdir -p /usr/local/lib/n5pro
+
+  if [[ -f /usr/local/lib/n5pro/common.sh ]]; then
+    info "common.sh local já disponível em /usr/local/lib/n5pro/common.sh"
+    return 0
+  fi
+
+  if [[ -f "${REPO_ROOT}/final/lib/common.sh" ]]; then
+    cp -a "${REPO_ROOT}/final/lib/common.sh" /usr/local/lib/n5pro/common.sh
+    chmod 644 /usr/local/lib/n5pro/common.sh
+    ok "common.sh instalado em /usr/local/lib/n5pro/common.sh"
+    return 0
+  fi
+
   if [[ -f "${SCRIPT_DIR}/../lib/common.sh" ]]; then
     cp -a "${SCRIPT_DIR}/../lib/common.sh" /usr/local/lib/n5pro/common.sh
     chmod 644 /usr/local/lib/n5pro/common.sh
     ok "common.sh instalado em /usr/local/lib/n5pro/common.sh"
-  else
-    warn "common.sh do repo não encontrado; a execução continua com o common já carregado."
+    return 0
   fi
-}
 
-write_config() {
-  print_step "STEP 8" "Gravar /etc/n5pro.conf"
-  backup_file /etc/n5pro.conf
-  cat >/etc/n5pro.conf <<EOF
-N5PRO_REPO_BASE="${N5PRO_REPO_BASE}"
-REPO_ROOT="/opt/n5pro"
-PVE_IP="${PVE_IP}"
-UNRAID_IP="${UNRAID_IP}"
-PBS_IP="${PBS_IP}"
-GATEWAY="${GATEWAY}"
-BRIDGE="${BRIDGE}"
-UNRAID_MAC="${UNRAID_MAC}"
-PBS_MAC="${PBS_MAC}"
-UNRAID_VMID="${UNRAID_VMID}"
-PBS_VMID="${PBS_VMID}"
-UNRAID_CORES="${UNRAID_CORES}"
-UNRAID_MEMORY="${UNRAID_MEMORY}"
-PBS_CORES="${PBS_CORES}"
-PBS_MEMORY="${PBS_MEMORY}"
-PBS_SYSTEM_DISK_GB="${PBS_SYSTEM_DISK_GB}"
-PBS_ISO_FILE="${PBS_ISO_FILE}"
-VM_STORAGE="${VM_STORAGE}"
-ISO_STORAGE="${ISO_STORAGE}"
-UNRAID_SATA_PCI="${UNRAID_SATA_PCI}"
-UNRAID_NVME_PCI="${UNRAID_NVME_PCI}"
-UNRAID_USB_ID="${UNRAID_USB_ID}"
-PBS_USB_BACKUP_ID="${PBS_USB_BACKUP_ID}"
-PBS_DATASTORE="${PBS_DATASTORE}"
-PBS_DATASTORE_MOUNT="${PBS_DATASTORE_MOUNT}"
-PBS_DATASTORE_FS="${PBS_DATASTORE_FS}"
-PBS_BACKUP_DEVICE="${PBS_BACKUP_DEVICE}"
-ENABLE_IOMMU="${ENABLE_IOMMU}"
-REMOVE_LOCAL_LVM_DEFAULT="${REMOVE_LOCAL_LVM_DEFAULT}"
-CREATE_NVME_CONTAINERS_DEFAULT="${CREATE_NVME_CONTAINERS_DEFAULT}"
-EOF
-  chmod 600 /etc/n5pro.conf
-  ok "/etc/n5pro.conf criado/atualizado."
-}
-
-install_runtime() {
-  print_step "STEP 9" "Instalar runtime N5Pro"
-  if command -v n5pro-update >/dev/null 2>&1; then
-    n5pro-update --install
-    ok "Runtime instalado com n5pro-update --install"
-  else
-    warn "n5pro-update não encontrado; instala o runtime com bootstrap/update depois."
-  fi
+  warn "common.sh do repo não encontrado; a execução continua com o common já carregado."
 }
 
 configure_repos() {
@@ -194,6 +162,14 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
     : > /etc/apt/sources.list
     info "debian.sources atualizado."
+  else
+    backup_file /etc/apt/sources.list
+    cat >/etc/apt/sources.list <<'EOF'
+deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+EOF
+    info "/etc/apt/sources.list atualizado."
   fi
 
   cat >/etc/apt/sources.list.d/pve-no-subscription.sources <<'EOF'
@@ -207,15 +183,42 @@ EOF
   ok "Repositórios configurados."
 }
 
+configure_timezone() {
+  print_step "STEP 2" "Confirmar timezone"
+  local current_tz
+  current_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+
+  if [[ -z "$current_tz" ]]; then
+    warn "Não foi possível detetar o timezone atual."
+    return 0
+  fi
+
+  info "Timezone atual detetado: ${current_tz}"
+  read -rp "$(echo -e "${YELLOW}Manter este timezone? [Y/n]: ${RESET}")" KEEP_TZ
+
+  if [[ ! "${KEEP_TZ,,}" =~ ^n(o)?$ ]]; then
+    ok "Timezone mantido: ${current_tz}"
+    return 0
+  fi
+
+  read -rp "$(echo -e "${CYAN}Introduz o timezone pretendido (ex: Europe/Lisbon, Atlantic/Azores): ${RESET}")" NEW_TZ
+  if timedatectl list-timezones | grep -qx "$NEW_TZ"; then
+    timedatectl set-timezone "$NEW_TZ"
+    ok "Timezone alterado para: ${NEW_TZ}"
+  else
+    die "Timezone inválido: ${NEW_TZ}"
+  fi
+}
+
 system_upgrade() {
-  print_step "STEP 2" "Atualizar sistema"
+  print_step "STEP 3" "Atualizar sistema"
   apt update
-  apt dist-upgrade -y
+  apt upgrade -y
   ok "Sistema atualizado."
 }
 
 handle_local_lvm() {
-  print_step "STEP 3" "Remover local-lvm e expandir root (opcional)"
+  print_step "STEP 4" "Remover local-lvm e expandir root (opcional)"
 
   if ! pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'local-lvm'; then
     info "local-lvm não existe; passo ignorado."
@@ -251,7 +254,7 @@ handle_local_lvm() {
 }
 
 create_nvme_storage() {
-  print_step "STEP 4" "Criar NVMe-Containers (LVM Thin Pool)"
+  print_step "STEP 5" "Criar NVMe-Containers (LVM Thin Pool)"
 
   [[ "${CREATE_NVME_CONTAINERS_DEFAULT}" == "true" ]] || {
     warn "CREATE_NVME_CONTAINERS_DEFAULT=false -> passo ignorado."
@@ -273,11 +276,16 @@ create_nvme_storage() {
   done
 
   read -rp "$(echo -e "${CYAN}Seleciona o índice do NVMe para ${VM_STORAGE}: ${RESET}")" DISK_INDEX
-  local DISK_NAME DISK
+  local DISK_NAME DISK ROOT_DEV
   DISK_NAME="$(echo "${NVME_DISKS[$DISK_INDEX]}" | awk '{print $1}')"
   DISK="/dev/${DISK_NAME}"
 
   [[ -b "$DISK" ]] || die "Disco inválido: ${DISK}"
+
+  ROOT_DEV="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null || true)"
+  if [[ -n "$ROOT_DEV" && "$DISK_NAME" == "$ROOT_DEV" ]]; then
+    die "O disco selecionado (${DISK}) parece ser o disco do sistema. Operação cancelada."
+  fi
 
   echo -e "${YELLOW}O disco selecionado é: ${DISK}${RESET}"
   confirm "Confirmas apagar este disco para ${VM_STORAGE}?" || die "Operação cancelada."
@@ -298,7 +306,7 @@ create_nvme_storage() {
 }
 
 configure_iommu() {
-  print_step "STEP 5" "Ativar IOMMU"
+  print_step "STEP 6" "Ativar IOMMU"
 
   [[ "${ENABLE_IOMMU}" == "true" ]] || {
     warn "ENABLE_IOMMU=false -> passo ignorado."
@@ -359,35 +367,8 @@ EOF
   fi
 }
 
-configure_timezone() {
-  print_step "STEP 5.1" "Confirmar timezone"
-  local current_tz
-  current_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
-
-  if [[ -z "$current_tz" ]]; then
-    warn "Não foi possível detetar o timezone atual."
-    return 0
-  fi
-
-  info "Timezone atual detetado: ${current_tz}"
-  read -rp "$(echo -e "${YELLOW}Manter este timezone? [Y/n]: ${RESET}")" KEEP_TZ
-
-  if [[ ! "${KEEP_TZ,,}" =~ ^n(o)?$ ]]; then
-    ok "Timezone mantido: ${current_tz}"
-    return 0
-  fi
-
-  read -rp "$(echo -e "${CYAN}Introduz o timezone pretendido (ex: Europe/Lisbon, Atlantic/Azores): ${RESET}")" NEW_TZ
-  if timedatectl list-timezones | grep -qx "$NEW_TZ"; then
-    timedatectl set-timezone "$NEW_TZ"
-    ok "Timezone alterado para: ${NEW_TZ}"
-  else
-    die "Timezone inválido: ${NEW_TZ}"
-  fi
-}
-
 install_packages() {
-  print_step "STEP 6" "Instalar firmware e ferramentas essenciais"
+  print_step "STEP 7" "Instalar firmware e ferramentas essenciais"
   apt install -y \
     amd64-microcode \
     pve-firmware \
@@ -421,7 +402,7 @@ install_packages() {
 }
 
 configure_bash() {
-  print_step "STEP 7" "Configurar Bash com cores"
+  print_step "STEP 8" "Configurar Bash com cores"
   backup_file /root/.bashrc
   cat <<'EOF' > /root/.bashrc
 export TERM=xterm-256color
@@ -434,48 +415,87 @@ EOF
   ok "Bash configurado."
 }
 
-install_common_local() {
-  print_step "STEP 0" "Instalar common.sh local"
-  mkdir -p /usr/local/lib/n5pro
-
-  if [[ -f /usr/local/lib/n5pro/common.sh ]]; then
-    cp -a /usr/local/lib/n5pro/common.sh /usr/local/lib/n5pro/common.sh >/dev/null 2>&1 || true
-    info "common.sh local já disponível em /usr/local/lib/n5pro/common.sh"
-    return 0
-  fi
-
-  if [[ -f "${REPO_ROOT:-/opt/n5pro}/final/lib/common.sh" ]]; then
-    cp -a "${REPO_ROOT:-/opt/n5pro}/final/lib/common.sh" /usr/local/lib/n5pro/common.sh
-    chmod 644 /usr/local/lib/n5pro/common.sh
-    ok "common.sh instalado em /usr/local/lib/n5pro/common.sh"
-    return 0
-  fi
-
-  if [[ -f "${SCRIPT_DIR}/../lib/common.sh" ]]; then
-    cp -a "${SCRIPT_DIR}/../lib/common.sh" /usr/local/lib/n5pro/common.sh
-    chmod 644 /usr/local/lib/n5pro/common.sh
-    ok "common.sh instalado em /usr/local/lib/n5pro/common.sh"
-    return 0
-  fi
-
-  warn "common.sh do repo não encontrado; a execução continua com o common já carregado."
+write_config() {
+  print_step "STEP 9" "Gravar /etc/n5pro.conf"
+  backup_file /etc/n5pro.conf
+  cat >/etc/n5pro.conf <<EOF
+N5PRO_REPO_BASE="${N5PRO_REPO_BASE}"
+REPO_ROOT="${REPO_ROOT}"
+PVE_IP="${PVE_IP}"
+UNRAID_IP="${UNRAID_IP}"
+PBS_IP="${PBS_IP}"
+GATEWAY="${GATEWAY}"
+BRIDGE="${BRIDGE}"
+UNRAID_MAC="${UNRAID_MAC}"
+PBS_MAC="${PBS_MAC}"
+UNRAID_VMID="${UNRAID_VMID}"
+PBS_VMID="${PBS_VMID}"
+UNRAID_CORES="${UNRAID_CORES}"
+UNRAID_MEMORY="${UNRAID_MEMORY}"
+PBS_CORES="${PBS_CORES}"
+PBS_MEMORY="${PBS_MEMORY}"
+PBS_SYSTEM_DISK_GB="${PBS_SYSTEM_DISK_GB}"
+PBS_ISO_FILE="${PBS_ISO_FILE}"
+VM_STORAGE="${VM_STORAGE}"
+ISO_STORAGE="${ISO_STORAGE}"
+UNRAID_SATA_PCI="${UNRAID_SATA_PCI}"
+UNRAID_NVME_PCI="${UNRAID_NVME_PCI}"
+UNRAID_USB_ID="${UNRAID_USB_ID}"
+PBS_USB_BACKUP_ID="${PBS_USB_BACKUP_ID}"
+PBS_DATASTORE="${PBS_DATASTORE}"
+PBS_DATASTORE_MOUNT="${PBS_DATASTORE_MOUNT}"
+PBS_DATASTORE_FS="${PBS_DATASTORE_FS}"
+PBS_BACKUP_DEVICE="${PBS_BACKUP_DEVICE}"
+ENABLE_IOMMU="${ENABLE_IOMMU}"
+REMOVE_LOCAL_LVM_DEFAULT="${REMOVE_LOCAL_LVM_DEFAULT}"
+CREATE_NVME_CONTAINERS_DEFAULT="${CREATE_NVME_CONTAINERS_DEFAULT}"
+EOF
+  chmod 600 /etc/n5pro.conf
+  ok "/etc/n5pro.conf criado/atualizado."
 }
 
+install_runtime() {
+  print_step "STEP 10" "Instalar runtime N5Pro"
+  if command -v n5pro-update >/dev/null 2>&1; then
+    n5pro-update --install
+    ok "Runtime instalado com n5pro-update --install"
+  else
+    warn "n5pro-update não encontrado; instala o runtime com bootstrap/update depois."
+  fi
+}
+
+finish_message() {
+  echo -e "\n$LINE"
+  echo -e "${GREEN}${BOLD}✅ Host post-install concluído.${RESET}"
+  echo -e "${CYAN}Repo base guardado em /etc/n5pro.conf:${RESET} ${N5PRO_REPO_BASE}"
+  echo -e "${YELLOW}${BOLD}REBOOT RECOMENDADO${RESET}"
+  echo -e "${GREEN}Depois do reboot, corre: n5pro${RESET}"
+  echo -e "${GREEN}Depois usa: n5pro-post${RESET}"
+  echo -e "$LINE"
+
+  case "$REBOOT_AT_END" in
+    true)
+      echo -e "${YELLOW}[INFO]${RESET} Reinício automático em 5 segundos..."
+      sleep 5
+      reboot
+      ;;
+    ask)
+      if confirm "Queres reiniciar já"; then
+        reboot
+      fi
+      ;;
+  esac
+}
+
+install_common_local
 configure_repos
+configure_timezone
 system_upgrade
 handle_local_lvm
 create_nvme_storage
 configure_iommu
-configure_timezone
 install_packages
 configure_bash
 write_config
 install_runtime
-
-echo -e "\n$LINE"
-echo -e "${GREEN}${BOLD}✅ Host post-install concluído.${RESET}"
-echo -e "${CYAN}Repo base guardado em /etc/n5pro.conf:${RESET} ${N5PRO_REPO_BASE}"
-echo -e "${YELLOW}${BOLD}REBOOT RECOMENDADO${RESET}"
-echo -e "${GREEN}Depois do reboot, corre: n5pro${RESET}"
-echo -e "${GREEN}Depois usa: n5pro-post${RESET}"
-echo -e "$LINE"
+finish_message
