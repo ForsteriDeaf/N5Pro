@@ -43,10 +43,7 @@ strip_ansi() {
 
 center_print() {
   local text="$1"
-  local clean
-  local width
-  local len
-  local pad
+  local clean width len pad
 
   clean="$(echo -e "$text" | strip_ansi)"
   width="$(tput cols 2>/dev/null || echo 80)"
@@ -75,6 +72,20 @@ load_config_if_present() {
   if config_exists; then
     # shellcheck disable=SC1091
     source "$CONFIG_FILE"
+  fi
+}
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+menu_label() {
+  local cmd="$1"
+  local label="$2"
+  if has_cmd "$cmd"; then
+    echo -e "$label"
+  else
+    echo -e "${label} ${YELLOW}(indisponível)${RESET}"
   fi
 }
 
@@ -113,20 +124,6 @@ show_logo() {
 confirm() {
   read -rp "$1 [y/N]: " a
   [[ "${a,,}" =~ ^y(es)?$ ]]
-}
-
-has_cmd() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-menu_label() {
-  local cmd="$1"
-  local label="$2"
-  if has_cmd "$cmd"; then
-    echo "$label"
-  else
-    echo "${label} ${YELLOW}(indisponível)${RESET}"
-  fi
 }
 
 show_status() {
@@ -481,11 +478,11 @@ main_menu() {
     echo "1) Update"
     echo "2) Wizard"
     echo "3) Diagnóstico"
-    echo "4) Backup"
-    echo "5) PBS"
-    echo "6) Logs"
+    echo "4) $(menu_label n5pro-backup "Backup")"
+    echo "5) $(menu_label n5pro-bootstrap-pbs "PBS")"
+    echo "6) $(menu_label n5pro-log "Logs")"
     echo "7) Config"
-    echo "8) Automation"
+    echo "8) $(menu_label n5pro-cron "Automation")"
     echo "0) Sair"
 
     read -rp "Escolha: " opt
