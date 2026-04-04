@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 # shellcheck disable=SC1091
 source /usr/local/lib/n5pro/common.sh
@@ -13,8 +13,11 @@ RUNTIME_DIR="${FINAL_DIR}/runtime"
 HOST_DIR="${FINAL_DIR}/host"
 PVE_DIR="${FINAL_DIR}/pve"
 PBS_DIR="${FINAL_DIR}/pbs"
-LIB_DIR="${FINAL_DIR}/lib"
+LIB_SRC_DIR="${FINAL_DIR}/lib"
 EXAMPLES_DIR="${FINAL_DIR}/examples"
+
+BIN_DIR="/usr/local/bin"
+LOCAL_LIB_DIR="/usr/local/lib/n5pro"
 
 BACKUP_ROOT="/root/.n5pro-update-backups"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -43,11 +46,31 @@ SELF_CHECK_FAIL="0"
 
 DOCTOR_STATUS="NOT_RUN"
 
+RUNTIME_REQUIRED=(
+  n5pro
+  n5pro-post
+  n5pro-update
+  n5pro-doctor
+)
+
+RUNTIME_OPTIONAL=(
+  n5pro-backup
+  n5pro-version
+  n5pro-bootstrap-pbs
+  n5pro-repo-safe
+  n5pro-heal
+  n5pro-log
+  n5pro-cron
+  n5pro-ssh-setup-pbs
+)
+
 case "${1:-}" in
   --install) INSTALL_MODE="true" ;;
   --check) CHECK_MODE="true" ;;
   --self-check) SELF_CHECK_MODE="true" ;;
   --doctor) DOCTOR_MODE="true" ;;
+  *)
+    ;;
 esac
 
 print_header "N5Pro Update"
@@ -56,27 +79,45 @@ print_header "N5Pro Update"
 [[ -d "$REPO_ROOT" ]] || die "Repo não encontrado em ${REPO_ROOT}"
 [[ -d "$FINAL_DIR" ]] || die "Diretório final não encontrado em ${FINAL_DIR}"
 [[ -d "$RUNTIME_DIR" ]] || die "Diretório runtime não encontrado em ${RUNTIME_DIR}"
-[[ -d "$LIB_DIR" ]] || die "Diretório lib não encontrado em ${LIB_DIR}"
+[[ -d "$LIB_SRC_DIR" ]] || die "Diretório lib não encontrado em ${LIB_SRC_DIR}"
 
-mkdir -p /usr/local/lib/n5pro
-mkdir -p /usr/local/bin
+mkdir -p "$LOCAL_LIB_DIR"
+mkdir -p "$BIN_DIR"
 
 backup_if_exists() {
   local f="$1"
-  [[ -e "$f" ]] || return 0
+  [[ -e "$f" || -L "$f" ]] || return 0
 
   if [[ "$BACKUP_CREATED" != "true" ]]; then
     BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p "${BACKUP_DIR}/bin" "${BACKUP_DIR}/lib" "${BACKUP_DIR}/etc"
     BACKUP_CREATED="true"
     BACKUP_STATUS="CREATED"
   fi
 
-  cp -a "$f" "$BACKUP_DIR"/
+  local base
+  base="$(basename "$f")"
+
+  case "$f" in
+    /usr/local/bin/*)
+      cp -a "$f" "${BACKUP_DIR}/bin/${base}" 2>/dev/null || true
+      ;;
+    /usr/local/lib/n5pro/*)
+      cp -a "$f" "${BACKUP_DIR}/lib/${base}" 2>/dev/null || true
+      ;;
+    /etc/*)
+      cp -a "$f" "${BACKUP_DIR}/etc/${base}" 2>/dev/null || true
+      ;;
+    *)
+      cp -a "$f" "${BACKUP_DIR}/${base}" 2>/dev/null || true
+      ;;
+  esac
 }
 
 detect_version_file() {
-  if [[ -f "${REPO_ROOT}/VERSION" ]]; then
+  if [[ -f "${RUNTIME_DIR}/VERSION" ]]; then
+    echo "${RUNTIME_DIR}/VERSION"
+  elif [[ -f "${REPO_ROOT}/VERSION" ]]; then
     echo "${REPO_ROOT}/VERSION"
   elif [[ -f "${FINAL_DIR}/VERSION" ]]; then
     echo "${FINAL_DIR}/VERSION"
@@ -89,17 +130,10 @@ validate_structure() {
   info "Validar estrutura do repo..."
 
   [[ -f "${FINAL_DIR}/bootstrap.sh" ]] || die "Falta ${FINAL_DIR}/bootstrap.sh"
-  [[ -f "${LIB_DIR}/common.sh" ]] || die "Falta ${LIB_DIR}/common.sh"
-
-  local runtime_required=(
-    n5pro
-    n5pro-post
-    n5pro-update
-    n5pro-doctor
-  )
+  [[ -f "${LIB_SRC_DIR}/common.sh" ]] || die "Falta ${LIB_SRC_DIR}/common.sh"
 
   local f
-  for f in "${runtime_required[@]}"; do
+  for f in "${RUNTIME_REQUIRED[@]}"; do
     [[ -f "${RUNTIME_DIR}/${f}" ]] || warn "Runtime em falta: ${RUNTIME_DIR}/${f}"
   done
 
@@ -116,7 +150,7 @@ sync_git() {
 
   if [[ -n "$changed_files" ]]; then
     REPO_STATE="DIRTY"
-    REPO_CHANGED_COUNT="$(printf '%s\n' "$changed_files" | sed '/^$/d' | wc -l)"
+    REPO_CHANGED_COUNT="$(printf '%s\n' "$changed_files" | sed '/^$/d' | wc -l | tr -d ' ')"
     SYNC_STATUS="SKIPPED_LOCAL_CHANGES"
     warn "Existem alterações locais no repo. Sync git ignorado para proteger trabalho em curso."
     info "Ficheiros alterados localmente:"
@@ -148,6 +182,14 @@ backup_current_state() {
     /usr/local/bin/n5pro-post
     /usr/local/bin/n5pro-update
     /usr/local/bin/n5pro-doctor
+    /usr/local/bin/n5pro-backup
+    /usr/local/bin/n5pro-version
+    /usr/local/bin/n5pro-bootstrap-pbs
+    /usr/local/bin/n5pro-repo-safe
+    /usr/local/bin/n5pro-heal
+    /usr/local/bin/n5pro-log
+    /usr/local/bin/n5pro-cron
+    /usr/local/bin/n5pro-ssh-setup-pbs
   )
 
   local f
@@ -191,48 +233,59 @@ fix_permissions_and_validate_syntax() {
     files+=("$f")
   done < <(find "$FINAL_DIR" -type f -print0 | sort -z)
 
-  local f
+  local f base
   for f in "${files[@]}"; do
+    base="$(basename "$f")"
+
     if [[ "$f" == *.sh || "$f" == "${RUNTIME_DIR}/"* ]]; then
       chmod +x "$f" || true
-      bash -n "$f"
-      ok "OK: $(basename "$f")"
-    elif [[ "$(basename "$f")" == "VERSION" || "$(basename "$f")" == "config.env.example" ]]; then
-      ok "OK: $(basename "$f")"
+      if [[ "$base" == "VERSION" ]]; then
+        ok "OK: VERSION"
+      else
+        bash -n "$f"
+        ok "OK: ${base}"
+      fi
+    elif [[ "$base" == "VERSION" || "$base" == "config.env.example" ]]; then
+      ok "OK: ${base}"
     fi
   done
 
   SYNTAX_STATUS="OK"
 }
 
-install_runtime() {
-  info "Instalar runtime..."
+install_symlink() {
+  local src="$1"
+  local dst="$2"
+  local label="$3"
 
-  local runtime_files=(
-    n5pro
-    n5pro-post
-    n5pro-update
-    n5pro-doctor
-  )
+  [[ -e "$src" ]] || {
+    warn "Fonte em falta para ${label}: ${src}"
+    return 0
+  }
+
+  mkdir -p "$(dirname "$dst")"
+  rm -f "$dst"
+  ln -s "$src" "$dst"
+  ok "Ligado: ${label}"
+}
+
+install_runtime() {
+  info "Instalar runtime por symlink..."
 
   local f
-  for f in "${runtime_files[@]}"; do
+  for f in "${RUNTIME_REQUIRED[@]}" "${RUNTIME_OPTIONAL[@]}"; do
     if [[ -f "${RUNTIME_DIR}/${f}" ]]; then
-      cp -a "${RUNTIME_DIR}/${f}" "/usr/local/bin/${f}"
-      chmod +x "/usr/local/bin/${f}"
-      ok "Instalado: ${f}"
+      install_symlink "${RUNTIME_DIR}/${f}" "${BIN_DIR}/${f}" "${f}"
+      chmod +x "${RUNTIME_DIR}/${f}" || true
     fi
   done
 
-  cp -a "${LIB_DIR}/common.sh" /usr/local/lib/n5pro/common.sh
-  chmod 644 /usr/local/lib/n5pro/common.sh
-  ok "common.sh instalado"
+  install_symlink "${LIB_SRC_DIR}/common.sh" "${LOCAL_LIB_DIR}/common.sh" "common.sh"
 
   local version_file
   version_file="$(detect_version_file)"
   if [[ -n "$version_file" ]]; then
-    cp -a "$version_file" /usr/local/lib/n5pro/VERSION
-    ok "VERSION local atualizado."
+    install_symlink "$version_file" "${LOCAL_LIB_DIR}/VERSION" "VERSION"
   else
     warn "VERSION não encontrado no repo; versão local não foi atualizada."
   fi
@@ -246,12 +299,49 @@ self_check_ok() {
 }
 
 self_check_warn() {
+  SELF_CHECK_WARN=$((SELF_CHECK_WARN + 1))
   info "$1"
 }
 
 self_check_fail() {
   SELF_CHECK_FAIL=$((SELF_CHECK_FAIL + 1))
   fail_line "$1"
+}
+
+check_runtime_item() {
+  local name="$1"
+  local repo_file="${RUNTIME_DIR}/${name}"
+  local local_file="${BIN_DIR}/${name}"
+
+  if [[ ! -f "$repo_file" ]]; then
+    self_check_fail "Repo não contém: ${repo_file}"
+    return 0
+  fi
+
+  if [[ ! -e "$local_file" && ! -L "$local_file" ]]; then
+    self_check_fail "Runtime local em falta: ${local_file}"
+    return 0
+  fi
+
+  if [[ -L "$local_file" ]]; then
+    local target
+    target="$(readlink -f "$local_file" 2>/dev/null || true)"
+    local expected
+    expected="$(readlink -f "$repo_file" 2>/dev/null || true)"
+
+    if [[ -n "$target" && "$target" == "$expected" ]]; then
+      self_check_ok "OK runtime symlink: ${name}"
+    else
+      self_check_fail "Symlink runtime aponta para destino errado: ${name}"
+    fi
+    return 0
+  fi
+
+  if cmp -s "$repo_file" "$local_file"; then
+    self_check_ok "OK runtime: ${name}"
+  else
+    self_check_fail "Divergência runtime: ${name}"
+  fi
 }
 
 run_self_check() {
@@ -262,68 +352,36 @@ run_self_check() {
   echo "Self-check runtime"
   echo -e "$LINE"
 
-  local runtime_required=(
-    n5pro
-    n5pro-post
-    n5pro-update
-    n5pro-doctor
-  )
-
-  local runtime_optional=(
-    n5pro-backup
-    n5pro-version
-    n5pro-bootstrap-pbs
-    n5pro-repo-safe
-    n5pro-heal
-    n5pro-log
-    n5pro-cron
-  )
-
-  local f repo_file local_file
-  for f in "${runtime_required[@]}"; do
-    repo_file="${RUNTIME_DIR}/${f}"
-    local_file="/usr/local/bin/${f}"
-
-    if [[ ! -f "$repo_file" ]]; then
-      self_check_fail "Repo não contém: ${repo_file}"
-      continue
-    fi
-
-    if [[ ! -f "$local_file" ]]; then
-      self_check_fail "Runtime local em falta: ${local_file}"
-      continue
-    fi
-
-    if cmp -s "$repo_file" "$local_file"; then
-      self_check_ok "OK runtime: ${f}"
-    else
-      self_check_fail "Divergência runtime: ${f}"
-    fi
+  local f
+  for f in "${RUNTIME_REQUIRED[@]}"; do
+    check_runtime_item "$f"
   done
 
-  for f in "${runtime_optional[@]}"; do
-    repo_file="${RUNTIME_DIR}/${f}"
-    local_file="/usr/local/bin/${f}"
-
-    if [[ ! -f "$repo_file" ]]; then
-      info "Opcional não existe no repo: ${f}"
+  for f in "${RUNTIME_OPTIONAL[@]}"; do
+    if [[ ! -f "${RUNTIME_DIR}/${f}" ]]; then
+      self_check_warn "Opcional não existe no repo: ${f}"
       continue
     fi
 
-    if [[ ! -f "$local_file" ]]; then
-      info "Opcional não instalado: ${f}"
+    if [[ ! -e "${BIN_DIR}/${f}" && ! -L "${BIN_DIR}/${f}" ]]; then
+      self_check_warn "Opcional não instalado: ${f}"
       continue
     fi
 
-    if cmp -s "$repo_file" "$local_file"; then
-      self_check_ok "OK runtime opcional: ${f}"
-    else
-      self_check_fail "Divergência runtime opcional: ${f}"
-    fi
+    check_runtime_item "$f"
   done
 
-  if [[ -f "${LIB_DIR}/common.sh" && -f /usr/local/lib/n5pro/common.sh ]]; then
-    if cmp -s "${LIB_DIR}/common.sh" /usr/local/lib/n5pro/common.sh; then
+  if [[ -f "${LIB_SRC_DIR}/common.sh" && ( -f "${LOCAL_LIB_DIR}/common.sh" || -L "${LOCAL_LIB_DIR}/common.sh" ) ]]; then
+    if [[ -L "${LOCAL_LIB_DIR}/common.sh" ]]; then
+      local common_target expected_common
+      common_target="$(readlink -f "${LOCAL_LIB_DIR}/common.sh" 2>/dev/null || true)"
+      expected_common="$(readlink -f "${LIB_SRC_DIR}/common.sh" 2>/dev/null || true)"
+      if [[ -n "$common_target" && "$common_target" == "$expected_common" ]]; then
+        self_check_ok "OK lib symlink: common.sh"
+      else
+        self_check_fail "Symlink lib aponta para destino errado: common.sh"
+      fi
+    elif cmp -s "${LIB_SRC_DIR}/common.sh" "${LOCAL_LIB_DIR}/common.sh"; then
       self_check_ok "OK lib: common.sh"
     else
       self_check_fail "Divergência lib: common.sh"
@@ -334,14 +392,23 @@ run_self_check() {
 
   local version_file
   version_file="$(detect_version_file)"
-  if [[ -n "$version_file" && -f /usr/local/lib/n5pro/VERSION ]]; then
-    if cmp -s "$version_file" /usr/local/lib/n5pro/VERSION; then
+  if [[ -n "$version_file" && ( -f "${LOCAL_LIB_DIR}/VERSION" || -L "${LOCAL_LIB_DIR}/VERSION" ) ]]; then
+    if [[ -L "${LOCAL_LIB_DIR}/VERSION" ]]; then
+      local ver_target expected_ver
+      ver_target="$(readlink -f "${LOCAL_LIB_DIR}/VERSION" 2>/dev/null || true)"
+      expected_ver="$(readlink -f "$version_file" 2>/dev/null || true)"
+      if [[ -n "$ver_target" && "$ver_target" == "$expected_ver" ]]; then
+        self_check_ok "OK VERSION symlink"
+      else
+        self_check_fail "Symlink VERSION aponta para destino errado"
+      fi
+    elif cmp -s "$version_file" "${LOCAL_LIB_DIR}/VERSION"; then
       self_check_ok "OK VERSION"
     else
       self_check_fail "Divergência VERSION"
     fi
   else
-    info "VERSION ausente no repo ou no runtime local"
+    self_check_warn "VERSION ausente no repo ou no runtime local"
   fi
 
   if [[ "$SELF_CHECK_FAIL" -gt 0 ]]; then
@@ -444,7 +511,7 @@ show_summary() {
   elif [[ "$INSTALL_MODE" == "true" ]]; then
     ok "Modo --install aplicado."
   else
-    warn "Para reinstalar também os binários locais, usa: n5pro-update --install"
+    warn "Para reinstalar também os links locais, usa: n5pro-update --install"
   fi
 
   echo -e "$LINE"
